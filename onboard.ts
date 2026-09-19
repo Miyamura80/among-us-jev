@@ -389,7 +389,7 @@ function runMediaGenerators(choice: string, args: string[]): boolean {
         p.log.info("Generating logo suite...");
         const ok = generateAsset("scripts/generate-logo.ts", args);
         if (ok) {
-            p.log.success("Logo suite generated in docs/public/");
+            p.log.success("Logo suite generated in frontend/public/");
         } else {
             p.log.error("Logo generation failed.");
             return false;

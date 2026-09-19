@@ -40,7 +40,6 @@ bun run src/index.ts # Run TypeScript files
 
 - **src/** - Source code (entrypoint: `src/index.ts`)
 - **tests/** - Test files (bun test)
-- **docs/** - Documentation site (Next.js/Fumadocs, separate dependency tree)
 - **frontend/** - Frontend app (Vite/React, separate dependency tree)
 
 ## Code Style
@@ -114,13 +113,3 @@ and `.codex/agents/<name>.toml` is generated. After any change under
 - **Merge Strategy**: Squash and merge.
 - **Pre-commit CI gate**: Always run make ci before committing any changes. Ensure it passes with zero errors. Do not commit if make ci fails - fix all issues first, then commit.
 - **Never force push**: Do not use `git push --force` or `--force-with-lease`. If you hit a git issue, stop and ask the user for guidance.
-
----
-
-## Automated Translation (Jules Sync)
-
-Docs under `docs/content/` are auto-translated by the **Jules Translation Sync**
-workflow. Do NOT manually translate doc files - edit the English source and the
-workflow will update all locales (`es`, `ja`, `zh`).
-See [`docs/translation-guide.md`](docs/translation-guide.md) for the full
-glossary, file naming conventions, and translation rules.
