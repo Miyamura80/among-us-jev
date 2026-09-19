@@ -10,7 +10,7 @@ import {
 } from "./lib/image-utils";
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const OUTPUT_DIR = join(REPO_ROOT, "docs", "public");
+const OUTPUT_DIR = join(REPO_ROOT, "frontend", "public");
 
 function readProjectName(): string {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf-8"));

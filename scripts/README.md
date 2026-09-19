@@ -1,6 +1,6 @@
 # Scripts
 
-Utility and initialization scripts for the Bun-Template project.
+Utility and initialization scripts for the Among-Us-Jev project.
 
 ## Asset Generation
 
@@ -48,7 +48,7 @@ bun run scripts/generate-logo.ts
 bun run scripts/generate-logo.ts "My-Project" "modern geometric style"
 ```
 
-**Output (saved to `docs/public/`):**
+**Output (saved to `frontend/public/`):**
 
 - `logo-light.png` - Horizontal wordmark for light mode
 - `logo-dark.png` - Horizontal wordmark for dark mode

@@ -1,11 +1,11 @@
-# bun-template
+# among-us-jev
 
 <p align="center">
-  <img src="media/banner.png" alt="Bun-Template" width="400">
+  <img src="media/banner.png" alt="Among-Us-Jev" width="400">
 </p>
 
 <p align="center">
-<b>🥟 Agent-ergonomic opinionated Bun template</b>
+<b>AI agent that plays Among Us using JEV from Typesafe AI</b>
 </p>
 
 <p align="center">
@@ -17,16 +17,16 @@
 </p>
 
 <p align="center">
-  <img alt="Project Version" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FMiyamura80%2FBun-Template%2Fmain%2Fpackage.json&query=%24.version&label=version&color=blue">
+  <img alt="Project Version" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FMiyamura80%2FAmong-Us-Jev%2Fmain%2Fpackage.json&query=%24.version&label=version&color=blue">
   <img alt="Bun" src="https://img.shields.io/badge/runtime-bun-f9f1e1?logo=bun">
-  <img alt="GitHub repo size" src="https://img.shields.io/github/repo-size/Miyamura80/Bun-Template">
-  <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/Miyamura80/Bun-Template/ci_checks.yaml?branch=main">
+  <img alt="GitHub repo size" src="https://img.shields.io/github/repo-size/Miyamura80/among-us-jev">
+  <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/Miyamura80/among-us-jev/ci_checks.yaml?branch=main">
 </p>
 
 ---
 
 <p align="center">
-  <img src="media/demo.gif" alt="Bun-Template Demo" width="600">
+  <img src="media/demo.gif" alt="Among-Us-Jev Demo" width="600">
 </p>
 
 ## Key Features
@@ -40,7 +40,6 @@
 | **dependency-cruiser** | Module boundary enforcement |
 | **jscpd** | Duplicate code detection |
 | **prek** | Pre-commit hooks |
-| **Fumadocs** | Documentation site (Next.js) |
 | **Vite + React** | Frontend app |
 
 ## Quick Start
@@ -91,12 +90,11 @@ globalConfig.features.newUi;
 - [Biome](https://biomejs.dev) - Linter and formatter
 - [Zod](https://zod.dev) - TypeScript schema validation
 - [prek](https://github.com/j178/prek) - Pre-commit hook framework
-- [Fumadocs](https://fumadocs.dev) - Documentation framework
 
 ## About the Core Contributors
 
-<a href="https://github.com/Miyamura80/Bun-Template/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=Miyamura80/Bun-Template" />
+<a href="https://github.com/Miyamura80/among-us-jev/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Miyamura80/among-us-jev" />
 </a>
 
 Made with [contrib.rocks](https://contrib.rocks).

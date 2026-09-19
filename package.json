@@ -1,7 +1,7 @@
 {
-    "name": "bun-template",
+    "name": "among-us-jev",
     "version": "0.1.0",
-    "description": "🥟 Agent-ergonomic opinionated Bun template",
+    "description": "AI agent that plays Among Us using JEV from Typesafe AI",
     "type": "module",
     "scripts": {
         "dev": "bun run --watch src/index.ts",
@@ -11,7 +11,7 @@
         "lint": "biome check",
         "deadcode": "knip",
         "typecheck": "tsc --noEmit",
-        "lint:links": "find . -name '*.md' -not -path './node_modules/*' -not -path './docs/*' | xargs markdown-link-check --quiet --config .markdown-link-check.json",
+        "lint:links": "find . -name '*.md' -not -path './node_modules/*' | xargs markdown-link-check --quiet --config .markdown-link-check.json",
         "ci": "bun run lint && bun run deadcode && bun run typecheck && bun run lint:links",
         "test": "bun test",
         "test:fast": "bun test --timeout 5000",
