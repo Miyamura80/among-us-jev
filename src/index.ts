@@ -1,5 +1,8 @@
-import { globalConfig } from "@/config";
+import { createGameServer } from "@/server";
 
-console.log("Hello from Among-Us-Jev!");
-console.log(`Config loaded: ${globalConfig.exampleParent.exampleChild}`);
-console.log(`Running on: ${globalConfig.runningOn}`);
+const server = createGameServer();
+
+console.log(`Among Us Jev server listening on http://localhost:${server.port}`);
+console.log(
+    `Providers: Jev=${process.env.TYPESAFE_API_KEY ? "configured" : "local fallback"}, OpenRouter=${process.env.OPENROUTER_API_KEY ? "configured" : "local fallback"}`,
+);

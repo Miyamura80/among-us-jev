@@ -1,19 +1,17 @@
-# among-us-jev
+# Among Us × Jev
+
+Among Us × Jev is an Among Us-inspired game where one human can play against autonomous agents, or watch an entirely agent-run match. Jev handles moment-to-moment actions through a fixed 255-action space; an OpenRouter model plans, discusses, and votes.
 
 <p align="center">
-  <img src="media/banner.png" alt="Among-Us-Jev" width="400">
+  <img src="media/screenshots/02-observer-overview.png" alt="Live observer overview of the Skeld and agent cognition panel" width="100%">
 </p>
 
 <p align="center">
-<b>AI agent that plays Among Us using JEV from Typesafe AI</b>
-</p>
-
-<p align="center">
-  <a href="#key-features">Key Features</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#credits">Credits</a> •
-  <a href="#about-the-core-contributors">About the Core Contributors</a>
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#key-features">Key Features</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#about-the-core-contributors">Contributors</a>
 </p>
 
 <p align="center">
@@ -23,78 +21,69 @@
   <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/Miyamura80/among-us-jev/ci_checks.yaml?branch=main">
 </p>
 
----
+## Screenshots
 
-<p align="center">
-  <img src="media/demo.gif" alt="Among-Us-Jev Demo" width="600">
-</p>
+Live captures from the running game.
+
+### Launch a match
+
+![Game setup with human and observer modes, crew size, impostor count, and System 2 model](media/screenshots/01-launch.png)
+
+### See through a crewmate's eyes
+
+![Human gameplay with radial vision, wall occlusion, tasks, and the action dock](media/screenshots/04-human-vision.png)
+
+### Follow an agent's private point of view
+
+![Observer view focused on a selected agent and its System 1 and System 2 state](media/screenshots/03-agent-pov.png)
+
+### Watch agents discuss and vote
+
+![Live discussion with ten turns, a caller highlight, roster, ballot, and ship map](media/screenshots/05-live-discussion.png)
 
 ## Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **Bun runtime** | Fast TypeScript execution and package management |
-| **Zod config** | YAML + env var config with Zod schema validation |
-| **Biome** | Linting and formatting |
-| **knip** | Dead code and unused dependency detection |
-| **dependency-cruiser** | Module boundary enforcement |
-| **jscpd** | Duplicate code detection |
-| **prek** | Pre-commit hooks |
-| **Vite + React** | Frontend app |
+- Play as one human or watch an all-agent match; switch between agent points of view.
+- Explore the Skeld with room-aware sight, fog of war, tasks, vents, sabotages, kills, and meetings.
+- Inspect System 2 planning and System 1's masked action choices live.
+- Follow real-time discussion, visible votes, and ejections.
 
 ## Quick Start
 
+Requires [Bun](https://bun.sh) and the API keys below. From the repository root, run these in two terminals:
+
 ```bash
-# Interactive onboarding
-make onboard
-
-# Install dependencies and run
-make all
-
-# Format code
-make fmt
-
-# Run tests
-make test
-
-# Run all CI checks (lint, deadcode, typecheck, etc.)
-make ci
+bun install
+bun run start
 ```
+
+```bash
+cd frontend
+bun install
+bun run dev
+```
+
+Open `http://127.0.0.1:5173`.
 
 ## Configuration
 
-Config is loaded from YAML with environment variable overrides:
+Add these to a local, uncommitted `.env` file:
 
-```typescript
-import { globalConfig } from "@/config";
-
-// Access config values from src/config/global-config.yaml
-globalConfig.exampleParent.exampleChild;
-
-// Access secrets from .env
-globalConfig.openaiApiKey;
-
-// Feature flags (overridable via FEATURES__FLAG_NAME=true)
-globalConfig.features.newUi;
+```dotenv
+TYPESAFE_API_KEY=your_typesafe_ai_key
+OPENROUTER_API_KEY=your_openrouter_key
 ```
 
-**Precedence** (highest to lowest):
-1. Environment variables (with `__` for nesting, e.g. `DEFAULT_LLM__DEFAULT_MAX_TOKENS=50000`)
-2. `.global-config.yaml` (local override, git-ignored)
-3. `src/config/production-config.yaml` (if `DEV_ENV=prod`)
-4. `src/config/global-config.yaml` (base config)
+Choose the System 2 model in the launch screen. The server uses local fallback behavior if a provider is unavailable. Runtime settings: [game settings](src/game/engine.ts) and [model client](src/agents/openrouter-client.ts).
 
 ## Credits
 
-- [Bun](https://bun.sh) - JavaScript runtime and package manager
-- [Biome](https://biomejs.dev) - Linter and formatter
-- [Zod](https://zod.dev) - TypeScript schema validation
-- [prek](https://github.com/j178/prek) - Pre-commit hook framework
+Built with [Bun](https://bun.sh), [React](https://react.dev), [Jev by TypeSafe AI](https://typesafe.ai), and [OpenRouter](https://openrouter.ai).
 
 ## About the Core Contributors
 
 <a href="https://github.com/Miyamura80/among-us-jev/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=Miyamura80/among-us-jev" />
+  <img src="https://contrib.rocks/image?repo=Miyamura80/among-us-jev" alt="Project contributors" />
 </a>
 
 Made with [contrib.rocks](https://contrib.rocks).
