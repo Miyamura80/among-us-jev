@@ -5,6 +5,7 @@
     "type": "module",
     "scripts": {
         "dev": "bun run --watch src/index.ts",
+        "dev:frontend": "bun --cwd frontend run dev",
         "start": "bun run src/index.ts",
         "build": "bun build src/index.ts --outdir dist --target bun --minify",
         "fmt": "biome check --write",
