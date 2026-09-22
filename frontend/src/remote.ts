@@ -93,6 +93,7 @@ export interface RemoteSession {
   game: RemoteGame
   viewerId: string | null
   revealRoles: boolean
+  sessionToken: string
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -103,11 +104,18 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function createRemoteGame(config: GameConfig, openRouterApiKey: string): Promise<RemoteSession> {
-  const payload = await api<{ game: RemoteGame; viewerId: string | null }>("/api/games", {
+  const payload = await api<{ game: RemoteGame; viewerId: string | null; sessionToken: string }>("/api/games", {
     method: "POST",
     body: JSON.stringify({ openRouterApiKey, settings: { playerCount: config.playerCount, impostorCount: config.impostorCount, humanPlayers: config.mode === "human" ? 1 : 0, systemTwoModel: config.system2Model }, revealRoles: config.mode === "agents" }),
   })
   return { ...payload, revealRoles: config.mode === "agents" }
+}
+
+function authenticated(session: RemoteSession, init?: RequestInit): RequestInit {
+  return {
+    ...init,
+    headers: { Authorization: `Bearer ${session.sessionToken}`, ...init?.headers },
+  }
 }
 
 function query(session: RemoteSession, viewerId = session.viewerId, overview = false): string {
@@ -119,30 +127,30 @@ function query(session: RemoteSession, viewerId = session.viewerId, overview = f
 }
 
 export async function getRemoteGame(session: RemoteSession, viewerId = session.viewerId, overview = false): Promise<RemoteGame> {
-  const payload = await api<{ game: RemoteGame }>(`/api/games/${session.game.id}?${query(session, viewerId, overview)}`)
+  const payload = await api<{ game: RemoteGame }>(`/api/games/${session.game.id}?${query(session, viewerId, overview)}`, authenticated(session))
   return payload.game
 }
 
 export async function stepRemoteGame(session: RemoteSession, playerId: string, actionId: number): Promise<RemoteGame> {
-  const payload = await api<{ state: RemoteGame }>(`/api/games/${session.game.id}/step?${query(session, playerId)}`, { method: "POST", body: JSON.stringify({ playerId, actionId }) })
+  const payload = await api<{ state: RemoteGame }>(`/api/games/${session.game.id}/step?${query(session, playerId)}`, authenticated(session, { method: "POST", body: JSON.stringify({ playerId, actionId }) }))
   return payload.state
 }
 
 export async function observeRemoteGame(session: RemoteSession, playerId: string): Promise<RemoteObservation> {
-  const payload = await api<{ observation: RemoteObservation }>(`/api/games/${session.game.id}/observations/${playerId}`)
+  const payload = await api<{ observation: RemoteObservation }>(`/api/games/${session.game.id}/observations/${playerId}`, authenticated(session))
   return payload.observation
 }
 
 export async function voteRemoteGame(session: RemoteSession, playerId: string, targetId: string | null): Promise<RemoteGame> {
-  const payload = await api<{ game: RemoteGame }>(`/api/games/${session.game.id}/vote?${query(session, playerId)}`, { method: "POST", body: JSON.stringify({ playerId, targetId }) })
+  const payload = await api<{ game: RemoteGame }>(`/api/games/${session.game.id}/vote?${query(session, playerId)}`, authenticated(session, { method: "POST", body: JSON.stringify({ playerId, targetId }) }))
   return payload.game
 }
 
 export async function speakRemoteGame(session: RemoteSession, playerId: string, text: string): Promise<RemoteGame> {
-  const payload = await api<{ game: RemoteGame }>(`/api/games/${session.game.id}/speak?${query(session, playerId)}`, { method: "POST", body: JSON.stringify({ playerId, text }) })
+  const payload = await api<{ game: RemoteGame }>(`/api/games/${session.game.id}/speak?${query(session, playerId)}`, authenticated(session, { method: "POST", body: JSON.stringify({ playerId, text }) }))
   return payload.game
 }
 
 export async function acknowledgeRemoteSpeech(session: RemoteSession, playerId: string, startedAtTick: number, messageIndex: number): Promise<void> {
-  await api<{ ok: true }>(`/api/games/${session.game.id}/speech-complete?${query(session, playerId)}`, { method: "POST", body: JSON.stringify({ playerId, startedAtTick, messageIndex }) })
+  await api<{ ok: true }>(`/api/games/${session.game.id}/speech-complete?${query(session, playerId)}`, authenticated(session, { method: "POST", body: JSON.stringify({ playerId, startedAtTick, messageIndex }) }))
 }

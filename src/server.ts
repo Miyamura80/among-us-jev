@@ -8,9 +8,6 @@ import type { GameSettings, GameState } from "@/game/types";
 import { serveStaticSite } from "@/static-site";
 
 const JSON_HEADERS = {
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
@@ -83,7 +80,7 @@ async function readBody(request: Request): Promise<Record<string, unknown>> {
 }
 
 export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
-    const games = new Map<string, GameRuntime>();
+    const games = new Map<string, { runtime: GameRuntime; sessionToken: string }>();
     const agents = new AgentOrchestrator();
     const present = (
         game: GameRuntime,
@@ -111,7 +108,7 @@ export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
         // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keeping the small HTTP route table together makes endpoint authorization and response shaping auditable.
         async fetch(request) {
             if (request.method === "OPTIONS")
-                return new Response(null, { headers: JSON_HEADERS });
+                return new Response(null, { status: 204 });
             const url = new URL(request.url);
             const parts = url.pathname.split("/").filter(Boolean);
 
@@ -167,10 +164,11 @@ export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
                         new OpenRouterClient(userKey, game.settings.systemTwoModel),
                     );
                     const runtime = new GameRuntime(game, gameAgents);
-                    games.set(game.id, runtime);
+                    const sessionToken = crypto.randomUUID();
+                    games.set(game.id, { runtime, sessionToken });
                     const expiry = setTimeout(
                         () => {
-                            games.get(game.id)?.stop();
+                            games.get(game.id)?.runtime.stop();
                             games.delete(game.id);
                         },
                         2 * 60 * 60_000,
@@ -187,6 +185,7 @@ export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
                         {
                             game: present(runtime, viewerId, body.revealRoles === true),
                             viewerId,
+                            sessionToken,
                         },
                         201,
                     );
@@ -207,8 +206,11 @@ export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
                 return json({ error: "Not found" }, 404);
             }
             const gameId = parts[2];
-            const runtime = games.get(gameId);
-            if (!runtime) return json({ error: "Unknown game" }, 404);
+            const entry = games.get(gameId);
+            const authorization = request.headers.get("Authorization");
+            if (!entry || authorization !== `Bearer ${entry.sessionToken}`)
+                return json({ error: "Unknown game" }, 404);
+            const { runtime } = entry;
             const viewerId = url.searchParams.get("viewerId");
             const revealRoles = url.searchParams.get("revealRoles") === "true";
             const overview = url.searchParams.get("overview") === "true";
