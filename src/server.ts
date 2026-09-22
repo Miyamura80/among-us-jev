@@ -12,6 +12,9 @@ const JSON_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
 };
 
 function json(value: unknown, status = 200): Response {
@@ -165,6 +168,18 @@ export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
                     );
                     const runtime = new GameRuntime(game, gameAgents);
                     games.set(game.id, runtime);
+                    const expiry = setTimeout(
+                        () => {
+                            games.get(game.id)?.stop();
+                            games.delete(game.id);
+                        },
+                        2 * 60 * 60_000,
+                    );
+                    expiry.unref?.();
+                    runtime.onFinished(() => {
+                        clearTimeout(expiry);
+                        games.delete(game.id);
+                    });
                     runtime.start();
                     const viewerId =
                         game.players.find((player) => player.human)?.id ?? null;

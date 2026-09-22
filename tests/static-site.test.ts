@@ -14,6 +14,10 @@ test("serves the built site and its assets from one origin", async () => {
         const page = await serveStaticSite(new Request("https://game.test/"), root);
         expect(page.status).toBe(200);
         expect(page.headers.get("Content-Type")).toContain("text/html");
+        expect(page.headers.get("Content-Security-Policy")).toContain(
+            "connect-src 'self'",
+        );
+        expect(page.headers.get("Referrer-Policy")).toBe("no-referrer");
         expect(await page.text()).toContain("Jev Among Us");
 
         const asset = await serveStaticSite(
