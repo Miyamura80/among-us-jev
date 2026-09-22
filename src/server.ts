@@ -5,6 +5,7 @@ import { createGame } from "@/game/engine";
 import { observeGame } from "@/game/observation";
 import { GameRuntime } from "@/game/runtime";
 import type { GameSettings, GameState } from "@/game/types";
+import { serveStaticSite } from "@/static-site";
 
 const JSON_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
@@ -102,6 +103,7 @@ export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
     });
 
     return Bun.serve({
+        hostname: "0.0.0.0",
         port,
         // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keeping the small HTTP route table together makes endpoint authorization and response shaping auditable.
         async fetch(request) {
@@ -185,7 +187,8 @@ export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
                     );
                 }
             }
-            if (parts[0] !== "api" || parts[1] !== "games" || !parts[2]) {
+            if (parts[0] !== "api") return serveStaticSite(request);
+            if (parts[1] !== "games" || !parts[2]) {
                 return json({ error: "Not found" }, 404);
             }
             const gameId = parts[2];
