@@ -24,6 +24,21 @@ test("the highest-confidence willing speaker wins, with random tie-breaking", ()
     ).toBeNull();
 });
 
+test("finished games release their server resources", () => {
+    const game = createGame({ playerCount: 5, impostorCount: 1 }, 43);
+    game.phase = "finished";
+    game.winner = "crewmate";
+    const agents = new AgentOrchestrator(new JevClient(""), new OpenRouterClient(""));
+    const runtime = new GameRuntime(game, agents);
+    let released = false;
+
+    runtime.onFinished(() => {
+        released = true;
+    });
+
+    expect(released).toBe(true);
+});
+
 test("agents move on the server without browser ticks or human input", async () => {
     const game = createGame({ playerCount: 5, impostorCount: 1, humanPlayers: 1 }, 41);
     const before = game.players

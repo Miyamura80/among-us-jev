@@ -73,6 +73,7 @@ export class GameRuntime {
     private discussionWaitAbort: AbortController | null = null;
     private acknowledgedSpeechIndex = -1;
     private readonly speechWaiters = new Map<number, () => void>();
+    private finishedCallback: (() => void) | null = null;
 
     constructor(
         initial: GameState,
@@ -110,6 +111,11 @@ export class GameRuntime {
 
     get systemTwoHistory(): Record<string, SystemTwoTelemetry[]> {
         return Object.fromEntries(this.systemTwoEvents);
+    }
+
+    onFinished(callback: () => void): void {
+        if (this.current.phase === "finished") callback();
+        else this.finishedCallback = callback;
     }
 
     private recordSystemTwo(playerId: string, event: SystemTwoEvent): void {
@@ -257,7 +263,11 @@ export class GameRuntime {
         if (next.phase !== "meeting") this.ballotRevealFinished = false;
         this.current = next;
         this.version += 1;
-        if (next.phase === "finished") this.stop();
+        if (next.phase === "finished") {
+            this.stop();
+            this.finishedCallback?.();
+            this.finishedCallback = null;
+        }
     }
 
     private moveAgents(): void {

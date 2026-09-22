@@ -29,7 +29,9 @@ function App() {
     setLaunching(true)
     setLaunchError("")
     try {
-      setSession(await createRemoteGame(config, openRouterApiKey.trim()))
+      const nextSession = await createRemoteGame(config, openRouterApiKey.trim())
+      setOpenRouterApiKey("")
+      setSession(nextSession)
     } catch (caught) {
       setLaunchError(caught instanceof Error ? caught.message : "Could not reach the game server")
     } finally { setLaunching(false) }
@@ -44,7 +46,7 @@ function App() {
       <div className="console-title"><div><span>MISSION CONTROL</span><h2>{step === "access" ? "Connect OpenRouter" : "Choose your role"}</h2></div><span className="step-count">{step === "access" ? "01 / 02" : "02 / 02"}</span></div>
       {step === "access" ? <>
         <div className="field-group">
-          <label className="key-field" htmlFor="openrouter-key">OPENROUTER API KEY<input id="openrouter-key" type="password" autoComplete="off" spellCheck={false} value={openRouterApiKey} onChange={(event) => setOpenRouterApiKey(event.target.value)} placeholder="sk-or-…" /><small>Get a key at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer">OpenRouter</a>.</small></label>
+          <label className="key-field" htmlFor="openrouter-key">OPENROUTER API KEY<input id="openrouter-key" type="password" autoComplete="off" spellCheck={false} value={openRouterApiKey} onChange={(event) => setOpenRouterApiKey(event.target.value)} placeholder="sk-or-…" /><small>Used only for this game and never saved. <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer">Get a key</a>.</small></label>
         </div>
         <button className="launch-button" disabled={!openRouterApiKey.trim()} onClick={continueAccess}><span><Play weight="fill" /> Continue</span></button>
       </> : <>

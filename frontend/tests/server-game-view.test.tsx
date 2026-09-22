@@ -115,16 +115,18 @@ test("agent ticks continue while a human holds a movement key", async () => {
     phase: "action", players: [player], tasks: [], bodies: [], settings: { visionRadius: 190, systemTwoModel: "unbiased/pareto" },
     sabotage: null, sabotageDeadline: null, meeting: null, ejection: null, winner: null,
   }
-  const session: RemoteSession = { game, viewerId: player.id, revealRoles: false }
+  const session: RemoteSession = { game, viewerId: player.id, revealRoles: false, sessionToken: "test-session" }
   const originalFetch = globalThis.fetch
   let steps = 0
   let reads = 0
   let observations = 0
   let tickPosts = 0
+  let unauthenticatedRequests = 0
   const serverTimer = setInterval(() => {
     game = { ...game, tick: game.tick + 1, revision: game.revision + 1 }
   }, 350)
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
+    if (new Headers(init?.headers).get("Authorization") !== "Bearer test-session") unauthenticatedRequests += 1
     const path = String(input)
     if (path.includes("/observations/")) {
       observations += 1
@@ -163,6 +165,7 @@ test("agent ticks continue while a human holds a movement key", async () => {
     expect(reads).toBeGreaterThanOrEqual(2)
     expect(observations).toBeGreaterThan(1)
     expect(tickPosts).toBe(0)
+    expect(unauthenticatedRequests).toBe(0)
   } finally {
     clearInterval(serverTimer)
     cleanup()
@@ -184,7 +187,7 @@ test("observer gameplay retains the cognition sidebar", () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => Response.json({ game })
   try {
-    const view = render(<ServerGameView initialSession={{ game, viewerId: null, revealRoles: true }} onExit={() => {}} />)
+    const view = render(<ServerGameView initialSession={{ game, viewerId: null, revealRoles: true, sessionToken: "test-session" }} onExit={() => {}} />)
     expect([...view.container.getElementsByTagName("aside")].filter((element) => element.getAttribute("class") === "intel-panel")).toHaveLength(1)
     expect(view.container.textContent).toContain("PRIVATE COGNITION")
   } finally {
@@ -204,7 +207,7 @@ test("vent travel uses the selected context-sensitive slot", async () => {
     phase: "action", players: [player], tasks: [], bodies: [], settings: { visionRadius: 190, systemTwoModel: "unbiased/pareto" },
     sabotage: null, sabotageDeadline: null, meeting: null, ejection: null, winner: null,
   }
-  const session: RemoteSession = { game, viewerId: player.id, revealRoles: false }
+  const session: RemoteSession = { game, viewerId: player.id, revealRoles: false, sessionToken: "test-session" }
   const originalFetch = globalThis.fetch
   let submittedAction = -1
   globalThis.fetch = async (input, init) => {
