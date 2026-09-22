@@ -1,6 +1,8 @@
-import { ArrowRight, Brain, Megaphone, Prohibit } from "@phosphor-icons/react"
+import { useEffect, useRef, useState, type FormEvent } from "react"
+import { ArrowRight, Brain, Megaphone, Prohibit, SpeakerHigh } from "@phosphor-icons/react"
 import { Crewmate } from "./Crewmate"
 import { ShipMapFloor } from "./ShipMapFloor"
+import { formatDiscussionTime } from "./meeting-time"
 import type { Color } from "./game"
 import type { RemoteGame, RemotePlayer } from "./remote"
 
@@ -31,14 +33,79 @@ function Ballot({ game, votes, observerMode = false }: { game: RemoteGame; votes
   </div>
 }
 
-export function MeetingView({ game, human, observerMode = false, onVote }: {
+export function MeetingView({ game, human, observerMode = false, onVote, onSpeak, onSpeechComplete }: {
   game: RemoteGame
   human?: RemotePlayer
   observerMode?: boolean
   onVote: (targetId: string | null) => void
+  onSpeak?: (text: string) => Promise<void>
+  onSpeechComplete?: (startedAtTick: number, messageIndex: number) => Promise<void>
 }) {
+  const [draft, setDraft] = useState("")
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState("")
+  const chatRef = useRef<HTMLDivElement>(null)
   const meeting = game.meeting
+  const pendingSpeechIndex = human?.alive && meeting?.stage === "discussion" ? meeting.awaitingSpeechIndex : null
+  const pendingSpeechText = pendingSpeechIndex == null ? null : meeting?.transcript[pendingSpeechIndex]?.text
+  const meetingStartTick = meeting?.startedAtTick
+  const bodyReported = Boolean(meeting?.bodyId)
+  useEffect(() => {
+    if (pendingSpeechIndex == null || !pendingSpeechText || !onSpeechComplete || meetingStartTick === undefined) return
+    const spokenText = formatDiscussionTime(pendingSpeechText, meetingStartTick, bodyReported)
+    const readingTimeMs = Math.min(20_000, Math.max(3_000, spokenText.split(/\s+/).length * 450))
+    let finished = false
+    let fallbackTimer: number | undefined
+    const finish = () => {
+      if (finished) return
+      finished = true
+      void onSpeechComplete(meetingStartTick, pendingSpeechIndex)
+    }
+    if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
+      fallbackTimer = window.setTimeout(finish, readingTimeMs)
+      return () => window.clearTimeout(fallbackTimer)
+    }
+    const utterance = new SpeechSynthesisUtterance(spokenText)
+    utterance.rate = 0.95
+    let started = false
+    utterance.onstart = () => { started = true }
+    utterance.onend = finish
+    utterance.onerror = () => { fallbackTimer = window.setTimeout(finish, readingTimeMs) }
+    try { window.speechSynthesis.speak(utterance) }
+    catch { fallbackTimer = window.setTimeout(finish, readingTimeMs) }
+    const startupTimer = window.setTimeout(() => {
+      if (started || finished || fallbackTimer !== undefined) return
+      window.speechSynthesis.cancel()
+      fallbackTimer = window.setTimeout(finish, readingTimeMs)
+    }, 5_000)
+    return () => {
+      utterance.onstart = null
+      utterance.onend = null
+      utterance.onerror = null
+      window.clearTimeout(startupTimer)
+      window.clearTimeout(fallbackTimer)
+      window.speechSynthesis.cancel()
+    }
+  }, [bodyReported, meetingStartTick, onSpeechComplete, pendingSpeechIndex, pendingSpeechText])
+  useEffect(() => {
+    if (chatRef.current && typeof chatRef.current.scrollTo === "function") chatRef.current.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" })
+  }, [meeting?.transcript.length])
   if (!meeting) return null
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const message = draft.trim()
+    if (!message || !onSpeak || sending) return
+    setSending(true)
+    setSendError("")
+    try {
+      await onSpeak(message)
+      setDraft("")
+    } catch (caught) {
+      setSendError(caught instanceof Error ? caught.message : "Message could not be sent")
+    } finally {
+      setSending(false)
+    }
+  }
   const selectedVote = human ? meeting.votes[human.id] : undefined
   const agents = game.players.filter((player) => player.alive && !player.human)
   const roster = game.players.filter((player) => player.alive)
@@ -49,19 +116,24 @@ export function MeetingView({ game, human, observerMode = false, onVote }: {
   const victim = meeting.bodyId ? game.players.find((player) => player.id === meeting.bodyId) : null
   const reporterLabel = meeting.bodyId ? "REPORTER" : "CALLER"
   const isRevealedImpostor = (player: RemotePlayer | undefined) => observerMode && player?.role === "impostor"
-  return <main className="meeting-screen">
-    <header><span className="signal-dot" /> SYSTEM 2 {voting ? "VOTING" : "DISCUSSION"} <b>{voting ? `TICK ${game.tick}` : `VOTING IN ${secondsToVote}s`}</b></header>
+  return <main className={`meeting-screen ${human?.alive ? "human-meeting" : ""}`}>
+    <header><span className="signal-dot" /> SYSTEM 2 {voting ? "VOTING" : "DISCUSSION"} <b>{voting ? "BALLOT OPEN" : `VOTING IN ${secondsToVote}s`}</b></header>
     <div className="meeting-grid">
       <section className="meeting-copy">
         <span>PUBLIC CLAIMS · {meeting.transcript.length} TURNS</span>
         <h1>{victim ? <>Body<br />reported.</> : <>Emergency<br />meeting.</>}</h1>
         <p>{meeting.reason}</p>
         {victim && <div className="meeting-victim"><Crewmate color={victim.color as Color} dead /><span><small>BODY FOUND</small><strong>{victim.name}</strong></span></div>}
-        <div className="chat-log" aria-live="polite">
+        <div className="chat-log" ref={chatRef} aria-live="polite">
           {meeting.transcript.length === 0 && <p className="meeting-waiting">{speakers.length ? `${speakers.length} agents are forming statements…` : "Waiting for the first statement…"}</p>}
-          {meeting.transcript.map((message, index) => { const speaker = game.players.find((player) => player.id === message.playerId); const isReporter = message.playerId === meeting.reporterId; return <div className={`${isRevealedImpostor(speaker) ? "impostor-revealed " : ""}${isReporter ? "meeting-reporter" : ""}`} key={`${message.playerId}-${index}`}>{isReporter ? <Megaphone weight="fill" aria-hidden="true" /> : <Brain weight="fill" />}<span><b>{speaker?.name}:</b> {message.text}</span>{isReporter && <small className="meeting-reporter-tag">{reporterLabel}</small>}</div> })}
+          {meeting.transcript.map((message, index) => { const speaker = game.players.find((player) => player.id === message.playerId); const isReporter = message.playerId === meeting.reporterId; return <div className={`${isRevealedImpostor(speaker) ? "impostor-revealed " : ""}${isReporter ? "meeting-reporter" : ""}`} key={`${message.playerId}-${index}`}>{isReporter ? <Megaphone weight="fill" aria-hidden="true" /> : <Brain weight="fill" />}<span><b>{speaker?.name}:</b> {formatDiscussionTime(message.text, meeting.startedAtTick, Boolean(meeting.bodyId))}</span>{index === pendingSpeechIndex && <small className="meeting-speaking"><SpeakerHigh weight="fill" aria-hidden="true" /> Speaking</small>}{isReporter && <small className="meeting-reporter-tag">{reporterLabel}</small>}</div> })}
           {!voting && meeting.transcript.length > 0 && <p className="meeting-waiting">Discussion remains open.</p>}
         </div>
+        {human?.alive && !voting && onSpeak && <form className="meeting-composer" onSubmit={(event) => void submit(event)}>
+          <label htmlFor="meeting-message">Your message</label>
+          <div><textarea id="meeting-message" value={draft} maxLength={500} rows={2} placeholder="Share what you saw…" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} /><button type="submit" disabled={!draft.trim() || sending}>{sending ? "Sending…" : "Send"}</button></div>
+          {sendError && <p role="alert">{sendError}</p>}
+        </form>}
       </section>
       <section className="vote-panel">
         <div className="section-label"><span>{voting ? "VOTE TO EJECT" : "DISCUSSION ROSTER"}</span><b>{game.players.filter((player) => player.alive).length} connected</b></div>

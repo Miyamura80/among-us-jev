@@ -242,11 +242,17 @@ function beginMeeting(
         reason,
         reporterId: reporter.id,
         bodyId,
+        startedAtTick: state.tick,
         stage: "discussion",
         transcript: [],
         votes: {},
         endsAtTick: state.tick + state.settings.discussionTicks,
-        discussionEndsAtMs: Date.now() + 30_000,
+        discussionEndsAtMs:
+            Date.now() +
+            (state.players.some((player) => player.human && player.alive)
+                ? 90_000
+                : 30_000),
+        awaitingSpeechIndex: null,
     };
     if (bodyId) {
         const body = state.bodies.find((candidate) => candidate.playerId === bodyId);
@@ -606,7 +612,11 @@ export function advanceGame(input: GameState, ticks = 1): GameState {
         state.phase = "action";
         state.meeting = null;
         state.ejection = null;
-        for (const player of state.players) player.position = centerOf("cafeteria");
+        for (const player of state.players) {
+            player.position = centerOf("cafeteria");
+            if (player.alive && player.role === "impostor")
+                player.killCooldown = state.settings.killCooldownTicks;
+        }
         checkWinner(state);
     } else if (state.phase !== "ejection") {
         checkWinner(state);

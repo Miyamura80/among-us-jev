@@ -1,6 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { SpeakDecision } from "@/agents/jev-client";
 import {
     type AgentOrchestrator,
     type AgentTurn,
@@ -13,11 +12,14 @@ import {
 import { ACTION } from "@/game/action-space";
 import { advanceGame, appendDiscussion, resolveVotes, stepGame } from "@/game/engine";
 import { MOVEMENT_DIRECTIONS, nextWaypoint } from "@/game/map";
-import { trimMemoryEvents } from "@/game/memory";
 import { observeGame } from "@/game/observation";
 import { activePlan } from "@/game/plan";
+import {
+    type SpeakerCandidate,
+    mergeAgentMemory,
+    selectSpeaker,
+} from "@/game/runtime-helpers";
 import type {
-    AgentMemory,
     AgentPlan,
     DiscussionMessage,
     GameState,
@@ -26,78 +28,10 @@ import type {
     StepResult,
 } from "@/game/types";
 
-function latestPostKillEscape(
-    planned: AgentMemory["postKillEscape"],
-    live: AgentMemory["postKillEscape"],
-): AgentMemory["postKillEscape"] {
-    if (!live) return planned;
-    if (!planned || live.atTick > planned.atTick) return structuredClone(live);
-    return planned;
-}
-
-function mergeAgentMemory(planned: AgentMemory, live: AgentMemory): AgentMemory {
-    const merged = structuredClone(planned);
-    if (live.lastPlannedAtMs > merged.lastPlannedAtMs) {
-        merged.plan = structuredClone(live.plan);
-        merged.lastPlannedAtMs = live.lastPlannedAtMs;
-    }
-    merged.postKillEscape = latestPostKillEscape(
-        merged.postKillEscape,
-        live.postKillEscape,
-    );
-    for (const event of live.events.filter(
-        (candidate) => candidate.kind === "kill" || candidate.kind === "vent",
-    )) {
-        const existing = merged.events.find(
-            (candidate) =>
-                candidate.kind === event.kind &&
-                candidate.tick === event.tick &&
-                candidate.killerId === event.killerId &&
-                candidate.victimId === event.victimId &&
-                candidate.ventUserId === event.ventUserId,
-        );
-        if (existing) {
-            if (event.reported) existing.reported = true;
-            continue;
-        }
-        merged.events.push(event);
-    }
-    merged.events = trimMemoryEvents(merged.events);
-    for (const event of merged.events.filter(
-        (candidate) => candidate.kind === "kill" || candidate.kind === "vent",
-    )) {
-        const suspectId = event.killerId ?? event.ventUserId;
-        if (suspectId)
-            merged.suspicions[suspectId] = Math.max(
-                merged.suspicions[suspectId] ?? 0,
-                live.suspicions[suspectId] ?? 1,
-            );
-    }
-    return merged;
-}
+export { selectSpeaker } from "@/game/runtime-helpers";
 
 type AgentController = Pick<AgentOrchestrator, "decide" | "discuss"> &
     Partial<Pick<AgentOrchestrator, "vote" | "shouldSpeak">>;
-
-interface SpeakerCandidate extends SpeakDecision {
-    playerId: string;
-}
-
-export function selectSpeaker(
-    candidates: SpeakerCandidate[],
-    random = Math.random,
-): string | null {
-    const willing = candidates.filter(
-        (candidate) => candidate.speak && Number.isFinite(candidate.confidence),
-    );
-    if (willing.length === 0) return null;
-    const highest = Math.max(...willing.map((candidate) => candidate.confidence));
-    const tied = willing.filter((candidate) => candidate.confidence === highest);
-    return (
-        tied[Math.min(tied.length - 1, Math.floor(random() * tied.length))]?.playerId ??
-        null
-    );
-}
 
 export interface SystemTwoTelemetry extends SystemTwoEvent {
     startedAtMs: number;
@@ -137,6 +71,8 @@ export class GameRuntime {
     private readonly finalBallotHoldMs: number;
     private ballotRevealFinished = false;
     private discussionWaitAbort: AbortController | null = null;
+    private acknowledgedSpeechIndex = -1;
+    private readonly speechWaiters = new Map<number, () => void>();
 
     constructor(
         initial: GameState,
@@ -208,6 +144,8 @@ export class GameRuntime {
 
     stop(): void {
         this.running = false;
+        for (const release of this.speechWaiters.values()) release();
+        this.speechWaiters.clear();
         this.discussionWaitAbort?.abort();
         this.discussionWaitAbort = null;
         if (this.timer) clearInterval(this.timer);
@@ -248,6 +186,58 @@ export class GameRuntime {
         return true;
     }
 
+    speakHuman(playerId: string, text: string): boolean {
+        const player = this.current.players.find(
+            (candidate) => candidate.id === playerId,
+        );
+        const message = text.trim().replace(/\s+/g, " ");
+        if (
+            !player?.human ||
+            !player.alive ||
+            this.current.meeting?.stage !== "discussion" ||
+            !message ||
+            message.length > 500
+        )
+            return false;
+        this.commit(appendDiscussion(this.current, [{ playerId, text: message }]));
+        return true;
+    }
+
+    acknowledgeSpeech(
+        playerId: string,
+        startedAtTick: number,
+        messageIndex: number,
+    ): boolean {
+        const meeting = this.current.meeting;
+        const player = this.current.players.find(
+            (candidate) => candidate.id === playerId,
+        );
+        const speaker = this.current.players.find(
+            (candidate) => candidate.id === meeting?.transcript[messageIndex]?.playerId,
+        );
+        if (
+            !player?.human ||
+            !player.alive ||
+            meeting?.stage !== "discussion" ||
+            meeting.startedAtTick !== startedAtTick ||
+            meeting.awaitingSpeechIndex !== messageIndex ||
+            !Number.isInteger(messageIndex) ||
+            messageIndex < 0 ||
+            !speaker ||
+            speaker.human
+        )
+            return false;
+        this.acknowledgedSpeechIndex = Math.max(
+            this.acknowledgedSpeechIndex,
+            messageIndex,
+        );
+        const next = structuredClone(this.current);
+        if (next.meeting) next.meeting.awaitingSpeechIndex = null;
+        this.commit(next);
+        this.speechWaiters.get(messageIndex)?.();
+        return true;
+    }
+
     private finishBallotIfReady(): void {
         if (!this.ballotRevealFinished || this.current.meeting?.stage !== "voting")
             return;
@@ -260,6 +250,10 @@ export class GameRuntime {
 
     private commit(next: GameState): void {
         if (next.phase !== this.current.phase) this.actionEpoch += 1;
+        if (next.phase === "meeting" && this.current.phase !== "meeting") {
+            this.acknowledgedSpeechIndex = -1;
+            this.speechWaiters.clear();
+        }
         if (next.phase !== "meeting") this.ballotRevealFinished = false;
         this.current = next;
         this.version += 1;
@@ -476,45 +470,107 @@ export class GameRuntime {
             (player) => player.id === reporterId && player.alive,
         );
         if (reporter?.human) this.openHumanReport(snapshot, reporter, transcript);
-        for (
-            let attempt = 0;
-            transcript.length < maxTurns && attempt < maxTurns * 2;
-            attempt += 1
-        ) {
+        for (let attempt = 0; attempt < maxTurns * 2; attempt += 1) {
+            this.syncTranscript(transcript);
+            if (this.agentTurnCount(transcript, agents) >= maxTurns) break;
             if (
                 !this.running ||
                 this.current.meeting?.stage !== "discussion" ||
                 Date.now() >= deadlineAtMs
             )
                 break;
-            const speakerId =
-                transcript.length === 0 && reporter && !reporter.human
-                    ? reporter.id
-                    : await this.chooseSpeaker(
-                          snapshot,
-                          agents,
-                          transcript,
-                          transcript.length < this.minimumDiscussionMessages,
-                      );
-            if (!speakerId || Date.now() >= deadlineAtMs) break;
-            const decision = await this.agents.discuss(
-                snapshot,
-                speakerId,
-                [...transcript],
-                (event) => this.recordSystemTwo(speakerId, event),
-            );
             if (
-                !this.publishStatement(
+                !(await this.deliverAgentStatement(
                     snapshot,
+                    agents,
                     transcript,
                     votes,
-                    speakerId,
-                    decision,
+                    reporter,
                     deadlineAtMs,
-                )
+                ))
             )
                 break;
         }
+    }
+
+    private syncTranscript(transcript: DiscussionMessage[]): void {
+        transcript.splice(
+            0,
+            transcript.length,
+            ...(this.current.meeting?.transcript ?? []),
+        );
+    }
+
+    private agentTurnCount(
+        transcript: DiscussionMessage[],
+        agents: PlayerState[],
+    ): number {
+        const agentIds = new Set(agents.map((agent) => agent.id));
+        return transcript.filter((message) => agentIds.has(message.playerId)).length;
+    }
+
+    private async deliverAgentStatement(
+        snapshot: GameState,
+        agents: PlayerState[],
+        transcript: DiscussionMessage[],
+        votes: Record<string, string | null>,
+        reporter: PlayerState | undefined,
+        deadlineAtMs: number,
+    ): Promise<boolean> {
+        const speakerId =
+            transcript.length === 0 && reporter && !reporter.human
+                ? reporter.id
+                : await this.chooseSpeaker(
+                      snapshot,
+                      agents,
+                      transcript,
+                      this.agentTurnCount(transcript, agents) <
+                          this.minimumDiscussionMessages,
+                  );
+        if (!speakerId || Date.now() >= deadlineAtMs) return false;
+        this.syncTranscript(transcript);
+        const decision = await this.agents.discuss(
+            snapshot,
+            speakerId,
+            [...transcript],
+            (event) => this.recordSystemTwo(speakerId, event),
+        );
+        if (
+            !this.publishStatement(
+                snapshot,
+                transcript,
+                votes,
+                speakerId,
+                decision,
+                deadlineAtMs,
+            )
+        )
+            return false;
+        const speechIndex = this.current.meeting?.awaitingSpeechIndex;
+        if (speechIndex !== null && speechIndex !== undefined)
+            await this.waitForSpokenAgentLine(speechIndex, deadlineAtMs);
+        return true;
+    }
+
+    private async waitForSpokenAgentLine(
+        messageIndex: number,
+        deadlineAtMs: number,
+    ): Promise<void> {
+        if (this.acknowledgedSpeechIndex >= messageIndex) return;
+        await new Promise<void>((resolve) => {
+            const timeout = setTimeout(
+                () => {
+                    this.speechWaiters.delete(messageIndex);
+                    resolve();
+                },
+                Math.max(0, deadlineAtMs - Date.now()),
+            );
+            this.speechWaiters.set(messageIndex, () => {
+                clearTimeout(timeout);
+                this.speechWaiters.delete(messageIndex);
+                resolve();
+            });
+        });
     }
 
     private openHumanReport(
@@ -522,6 +578,7 @@ export class GameRuntime {
         reporter: PlayerState,
         transcript: DiscussionMessage[],
     ): void {
+        if (this.current.meeting?.transcript.length) return;
         const victim = snapshot.players.find(
             (player) => player.id === snapshot.meeting?.bodyId,
         );
@@ -585,6 +642,11 @@ export class GameRuntime {
     ): boolean {
         if (Date.now() >= deadlineAtMs || this.current.meeting?.stage !== "discussion")
             return false;
+        transcript.splice(
+            0,
+            transcript.length,
+            ...(this.current.meeting?.transcript ?? []),
+        );
         const message = { ...decision.message, playerId: speakerId };
         if (
             transcript.some(
@@ -597,6 +659,11 @@ export class GameRuntime {
         votes[message.playerId] = decision.voteFor;
         if (this.running && this.current.meeting?.stage === "discussion") {
             const next = appendDiscussion(this.current, [message]);
+            if (
+                next.meeting &&
+                next.players.some((player) => player.human && player.alive)
+            )
+                next.meeting.awaitingSpeechIndex = next.meeting.transcript.length - 1;
             const live = next.players.find((player) => player.id === message.playerId);
             const deliberated = snapshot.players.find(
                 (player) => player.id === message.playerId,
@@ -652,6 +719,7 @@ export class GameRuntime {
         const next = structuredClone(this.current);
         if (!next.meeting) return false;
         next.meeting.stage = "voting";
+        next.meeting.awaitingSpeechIndex = null;
         next.meeting.votes = {};
         this.commit(next);
         return true;
@@ -713,6 +781,10 @@ export class GameRuntime {
             deadlineAtMs,
         ).catch((error) => console.error("Agent discussion failed", error));
         if (!(await this.waitForDiscussionDeadline(deadlineAtMs))) return;
-        await this.conductBallot(agents, transcript, votes);
+        await this.conductBallot(
+            agents,
+            this.current.meeting?.transcript ?? transcript,
+            votes,
+        );
     }
 }

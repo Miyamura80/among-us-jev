@@ -286,6 +286,8 @@ function actionCriterion(actionId: number, observation: Observation): string {
 export class JevClient {
     readonly endpoint = "https://api.typesafe.ai/v1/systemone";
     private readonly apiKey: string;
+    private readonly openRouterApiKey: string;
+    private typesafeRejected = false;
     private readonly fetcher: Fetcher;
     private readonly random: () => number;
 
@@ -293,14 +295,47 @@ export class JevClient {
         apiKey = process.env.TYPESAFE_API_KEY ?? "",
         fetcher: Fetcher = fetch,
         random = Math.random,
+        openRouterApiKey = "",
     ) {
         this.apiKey = apiKey;
+        this.openRouterApiKey = openRouterApiKey;
         this.fetcher = fetcher;
         this.random = random;
     }
 
     get configured(): boolean {
-        return this.apiKey.length > 0;
+        return this.apiKey.length > 0 || this.openRouterApiKey.length > 0;
+    }
+
+    private async request(body: object, timeoutMs: number): Promise<Response> {
+        const signal = AbortSignal.timeout(timeoutMs);
+        if (this.apiKey && !this.typesafeRejected) {
+            try {
+                const response = await this.fetcher(this.endpoint, {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${this.apiKey}`,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ ...body, model: "jev-latest" }),
+                    signal,
+                });
+                if (response.ok || !this.openRouterApiKey) return response;
+                if (response.status === 401 || response.status === 403)
+                    this.typesafeRejected = true;
+            } catch (error) {
+                if (!this.openRouterApiKey) throw error;
+            }
+        }
+        return this.fetcher("https://openrouter.ai/api/alpha/decisions", {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${this.openRouterApiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ ...body, model: "~typesafe/jev-latest" }),
+            signal: AbortSignal.timeout(timeoutMs),
+        });
     }
 
     async shouldSpeak(
@@ -320,14 +355,8 @@ export class JevClient {
         };
         if (!this.configured) return fallback;
         try {
-            const response = await this.fetcher(this.endpoint, {
-                method: "POST",
-                headers: {
-                    Authorization: `Bearer ${this.apiKey}`,
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    model: "jev-latest",
+            const response = await this.request(
+                {
                     state: {
                         observation: safeObservation(observation),
                         recentMemory: memory.events.filter(
@@ -350,9 +379,9 @@ export class JevClient {
                             },
                         },
                     },
-                }),
-                signal: AbortSignal.timeout(600),
-            });
+                },
+                600,
+            );
             if (!response.ok) return fallback;
             const payload = (await response.json()) as JevResponse;
             const answer = payload.answers.speak;
@@ -389,14 +418,8 @@ export class JevClient {
             ]),
         );
         try {
-            const response = await this.fetcher(this.endpoint, {
-                method: "POST",
-                headers: {
-                    Authorization: `Bearer ${this.apiKey}`,
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    model: "jev-latest",
+            const response = await this.request(
+                {
                     state: {
                         strategicGoal,
                         planA: primary ?? { goal: strategicGoal },
@@ -419,9 +442,9 @@ export class JevClient {
                             criteria,
                         },
                     },
-                }),
-                signal: AbortSignal.timeout(2_500),
-            });
+                },
+                2_500,
+            );
             if (!response.ok) throw new Error(`Jev returned ${response.status}`);
             const payload = (await response.json()) as JevResponse;
             const answer = payload.answers.action;

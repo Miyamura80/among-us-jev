@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { Window } from "happy-dom"
 import type { RemoteGame, RemoteSession } from "../src/remote"
+import { formatDiscussionTime } from "../src/meeting-time"
 
 const testWindow = new Window({ url: "http://localhost" })
 Object.assign(globalThis, {
@@ -30,6 +31,14 @@ const stationByLabel = (container: HTMLElement, label: string) => {
   if (!station) throw new Error(`Expected station: ${label}`)
   return station
 }
+
+test("renders discussion tick references relative to the meeting", () => {
+  expect(formatDiscussionTime("I saw Mira at tick 57, then at tick 60; tick 62 was later.", 60, false))
+    .toBe("I saw Mira 3 seconds before the meeting, then when the meeting was called; 2 seconds after the meeting was later.")
+  expect(formatDiscussionTime("tick 59 and tick 60", 60, true))
+    .toBe("1 second before the body was reported and when the body was reported")
+  expect(formatDiscussionTime("tick 57", undefined, false)).toBe("tick 57")
+})
 
 test("ship task stations follow the current stage and clear completed highlights", () => {
   const fuel = { kind: "fuel", roomIds: ["storage", "upper-engine", "lower-engine"], stage: 0, completed: false }
@@ -142,7 +151,8 @@ test("agent ticks continue while a human holds a movement key", async () => {
     return Response.json({ error: "Unexpected request" }, { status: 404 })
   }
   try {
-    render(<ServerGameView initialSession={session} onExit={() => {}} />)
+    const view = render(<ServerGameView initialSession={session} onExit={() => {}} />)
+    expect([...view.container.getElementsByTagName("aside")].filter((element) => element.getAttribute("class") === "intel-panel")).toHaveLength(0)
     fireEvent.keyDown(window, { key: "w" })
     for (let index = 0; index < 20 && (steps <= 4 || game.tick < 2 || reads < 2 || observations <= 1); index += 1) {
       await Bun.sleep(100)
@@ -155,6 +165,29 @@ test("agent ticks continue while a human holds a movement key", async () => {
     expect(tickPosts).toBe(0)
   } finally {
     clearInterval(serverTimer)
+    cleanup()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("observer gameplay retains the cognition sidebar", () => {
+  const agent: RemoteGame["players"][number] = {
+    id: "agent-0", name: "Echo", role: "crewmate", human: false,
+    alive: true, connected: true, position: { x: 500, y: 135 },
+    roomId: "cafeteria", color: "cyan", killCooldown: 0,
+  }
+  const game: RemoteGame = {
+    id: "observer-game", tick: 0, revision: 0, systemTwo: {}, systemTwoHistory: {}, firstKillAtMs: 0,
+    phase: "action", players: [agent], tasks: [], bodies: [], settings: { visionRadius: 190, systemTwoModel: "test-model" },
+    sabotage: null, sabotageDeadline: null, meeting: null, ejection: null, winner: null,
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => Response.json({ game })
+  try {
+    const view = render(<ServerGameView initialSession={{ game, viewerId: null, revealRoles: true }} onExit={() => {}} />)
+    expect([...view.container.getElementsByTagName("aside")].filter((element) => element.getAttribute("class") === "intel-panel")).toHaveLength(1)
+    expect(view.container.textContent).toContain("PRIVATE COGNITION")
+  } finally {
     cleanup()
     globalThis.fetch = originalFetch
   }
@@ -208,7 +241,7 @@ test("vent travel uses the selected context-sensitive slot", async () => {
   }
 })
 
-test("meeting shows streamed discussion before human voting opens", () => {
+test("meeting shows streamed discussion and a human reply composer before voting", () => {
   const human: RemoteGame["players"][number] = {
     id: "human", name: "You", role: "crewmate", human: true,
     alive: true, connected: true, position: { x: 500, y: 135 },
@@ -223,11 +256,16 @@ test("meeting shows streamed discussion before human voting opens", () => {
     systemTwoHistory: {}, settings: { visionRadius: 190, systemTwoModel: "unbiased/pareto" },
     phase: "meeting", players: [human, agent("agent-1", "Echo", "cyan"), agent("agent-2", "Mira", "pink")],
     tasks: [], bodies: [], sabotage: null, sabotageDeadline: null, ejection: null, winner: null,
-    meeting: { reason: "Echo called an emergency meeting", reporterId: "agent-1", bodyId: null, stage: "discussion", transcript: [{ playerId: "agent-1", text: "I called this meeting." }], votes: {}, discussionSecondsRemaining: 30 },
+    meeting: { reason: "Echo called an emergency meeting", reporterId: "agent-1", bodyId: null, startedAtTick: 60, stage: "discussion", transcript: [{ playerId: "agent-1", text: "I saw Mira at tick 57." }], votes: {}, discussionSecondsRemaining: 30 },
   }
   try {
-    const view = render(<MeetingView game={game} human={human} onVote={() => {}} />)
+    const view = render(<MeetingView game={game} human={human} onVote={() => {}} onSpeak={async () => {}} />)
     expect(view.container.textContent).toContain("VOTING IN 30s")
+    const composer = view.container.getElementsByTagName("textarea")[0]
+    expect(composer).toBeDefined()
+    if (!composer) throw new Error("Expected meeting composer")
+    expect(view.container.textContent).toContain("I saw Mira 3 seconds before the meeting.")
+    expect(view.container.textContent).not.toContain("tick 57")
     expect(view.container.textContent).toContain("Discussion remains open.")
     expect(view.container.textContent).toContain("Mira")
     expect(view.container.textContent).toContain("CALLER")
@@ -238,6 +276,9 @@ test("meeting shows streamed discussion before human voting opens", () => {
     const meetingText = view.container.textContent ?? ""
     expect(meetingText.indexOf("SHIP MAP")).toBeGreaterThan(meetingText.indexOf("LIVE BALLOT"))
     view.rerender(<MeetingView game={{ ...game, meeting: { ...game.meeting!, stage: "voting" } }} human={human} onVote={() => {}} />)
+    expect(view.container.getElementsByTagName("textarea")).toHaveLength(0)
+    expect(view.container.textContent).toContain("BALLOT OPEN")
+    expect(view.container.textContent).not.toContain("TICK 52")
     expect(view.container.textContent).toContain("Skip vote")
     view.rerender(<MeetingView game={{ ...game, meeting: { ...game.meeting!, stage: "voting", votes: { human: "agent-1" } } }} human={human} onVote={() => {}} />)
     expect(tallyRow(view.container)?.getAttribute("aria-label")).toBe("Echo: 1 vote")
@@ -257,6 +298,7 @@ test("meeting shows streamed discussion before human voting opens", () => {
     expect(highlightedReporters(view.container)).toHaveLength(2)
     expect(view.container.innerHTML).toContain("meeting-victim")
     expect(view.container.textContent).toContain("Nova")
+    expect(view.container.textContent).toContain("3 seconds before the body was reported")
     expect(view.container.innerHTML).not.toContain("impostor-revealed")
     view.rerender(<MeetingView game={bodyGame} human={human} observerMode onVote={() => {}} />)
     expect(view.container.innerHTML.match(/impostor-revealed/g)).toHaveLength(1)
@@ -269,5 +311,46 @@ test("meeting shows streamed discussion before human voting opens", () => {
     expect(highlightedReporters(view.container).filter((element) => element.getAttribute("class")?.includes("impostor-revealed"))).toHaveLength(2)
   } finally {
     cleanup()
+  }
+})
+
+test("human meeting acknowledges an agent line only after speech ends", () => {
+  class FakeUtterance {
+    onend: (() => void) | null = null
+    onerror: (() => void) | null = null
+    rate = 1
+    constructor(public text: string) {}
+  }
+  const human: RemoteGame["players"][number] = {
+    id: "human", name: "You", role: "crewmate", human: true,
+    alive: true, connected: true, position: { x: 500, y: 135 },
+    roomId: "cafeteria", color: "red", killCooldown: 0,
+  }
+  const agent = { ...human, id: "agent", name: "Echo", human: false }
+  const game: RemoteGame = {
+    id: "speech-game", tick: 60, revision: 1, systemTwo: {}, systemTwoHistory: {}, firstKillAtMs: 0,
+    phase: "meeting", players: [human, agent], tasks: [], bodies: [], settings: { visionRadius: 190, systemTwoModel: "test-model" },
+    sabotage: null, sabotageDeadline: null, ejection: null, winner: null,
+    meeting: { reason: "Emergency meeting", reporterId: human.id, bodyId: null, startedAtTick: 60, stage: "discussion", transcript: [{ playerId: human.id, text: "I called this meeting." }, { playerId: agent.id, text: "I saw Mira at tick 57." }], votes: {}, awaitingSpeechIndex: 1, discussionSecondsRemaining: 70 },
+  }
+  const previousSynth = Object.getOwnPropertyDescriptor(testWindow, "speechSynthesis")
+  const previousUtterance = Object.getOwnPropertyDescriptor(globalThis, "SpeechSynthesisUtterance")
+  const spoken: FakeUtterance[] = []
+  const acknowledged: number[] = []
+  Object.defineProperty(testWindow, "speechSynthesis", { configurable: true, value: { speak: (utterance: FakeUtterance) => { spoken.push(utterance) }, cancel: () => {} } })
+  Object.defineProperty(globalThis, "SpeechSynthesisUtterance", { configurable: true, value: FakeUtterance })
+  try {
+    render(<MeetingView game={game} human={human} onVote={() => {}} onSpeechComplete={async (_tick, index) => { acknowledged.push(index) }} />)
+    expect(spoken).toHaveLength(1)
+    expect(spoken[0]?.text).toBe("I saw Mira 3 seconds before the meeting.")
+    expect(acknowledged).toHaveLength(0)
+    act(() => { spoken[0]?.onend?.() })
+    expect(acknowledged).toEqual([1])
+  } finally {
+    cleanup()
+    if (previousSynth) Object.defineProperty(testWindow, "speechSynthesis", previousSynth)
+    else Reflect.deleteProperty(testWindow, "speechSynthesis")
+    if (previousUtterance) Object.defineProperty(globalThis, "SpeechSynthesisUtterance", previousUtterance)
+    else Reflect.deleteProperty(globalThis, "SpeechSynthesisUtterance")
   }
 })

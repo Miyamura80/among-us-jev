@@ -99,11 +99,13 @@ export interface MeetingState {
     reason: string;
     reporterId: string;
     bodyId: string | null;
+    startedAtTick?: number;
     stage: "discussion" | "voting";
     transcript: DiscussionMessage[];
     votes: Record<string, string | null>;
     endsAtTick: number;
     discussionEndsAtMs?: number;
+    awaitingSpeechIndex?: number | null;
 }
 
 export interface EjectionState {
