@@ -1,3 +1,5 @@
+import { JevClient } from "@/agents/jev-client";
+import { OpenRouterClient } from "@/agents/openrouter-client";
 import { AgentOrchestrator } from "@/agents/orchestrator";
 import { createGame } from "@/game/engine";
 import { observeGame } from "@/game/observation";
@@ -117,11 +119,49 @@ export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
             }
             if (request.method === "POST" && url.pathname === "/api/games") {
                 const body = await readBody(request);
+                const userKey =
+                    typeof body.openRouterApiKey === "string"
+                        ? body.openRouterApiKey.trim()
+                        : "";
+                if (!userKey) return json({ error: "Enter an OpenRouter key" }, 400);
+                if (!userKey.startsWith("sk-or-"))
+                    return json({ error: "Enter a valid OpenRouter key" }, 400);
+                let keyResponse: Response;
+                try {
+                    keyResponse = await fetch("https://openrouter.ai/api/v1/key", {
+                        headers: { Authorization: `Bearer ${userKey}` },
+                        signal: AbortSignal.timeout(5_000),
+                    });
+                } catch {
+                    return json(
+                        { error: "Could not verify the OpenRouter key. Try again." },
+                        503,
+                    );
+                }
+                if (!keyResponse.ok)
+                    return json(
+                        {
+                            error:
+                                keyResponse.status === 401
+                                    ? "OpenRouter rejected this key"
+                                    : "Could not verify the OpenRouter key",
+                        },
+                        keyResponse.status === 401 ? 401 : 503,
+                    );
                 const settings = (body.settings ?? {}) as Partial<GameSettings>;
                 const seed = typeof body.seed === "number" ? body.seed : Date.now();
                 try {
                     const game = createGame(settings, seed);
-                    const runtime = new GameRuntime(game, agents);
+                    const gameAgents = new AgentOrchestrator(
+                        new JevClient(
+                            process.env.TYPESAFE_API_KEY ?? "",
+                            fetch,
+                            Math.random,
+                            userKey,
+                        ),
+                        new OpenRouterClient(userKey, game.settings.systemTwoModel),
+                    );
+                    const runtime = new GameRuntime(game, gameAgents);
                     games.set(game.id, runtime);
                     runtime.start();
                     const viewerId =
@@ -197,6 +237,45 @@ export function createGameServer(port = Number(process.env.PORT ?? 3001)) {
             }
             if (request.method === "POST" && parts[3] === "tick")
                 return json({ error: "Game ticks run autonomously" }, 410);
+            if (request.method === "POST" && parts[3] === "speak") {
+                const body = await readBody(request);
+                if (typeof body.playerId !== "string" || typeof body.text !== "string")
+                    return json({ error: "playerId and text are required" }, 400);
+                if (!runtime.speakHuman(body.playerId, body.text))
+                    return json(
+                        {
+                            error: "Only a living human can speak during discussion (1–500 characters)",
+                        },
+                        403,
+                    );
+                return json({ game: present(runtime, body.playerId, revealRoles) });
+            }
+            if (request.method === "POST" && parts[3] === "speech-complete") {
+                const body = await readBody(request);
+                if (
+                    typeof body.playerId !== "string" ||
+                    typeof body.startedAtTick !== "number" ||
+                    typeof body.messageIndex !== "number"
+                )
+                    return json(
+                        {
+                            error: "playerId, startedAtTick and messageIndex are required",
+                        },
+                        400,
+                    );
+                if (
+                    !runtime.acknowledgeSpeech(
+                        body.playerId,
+                        body.startedAtTick,
+                        body.messageIndex,
+                    )
+                )
+                    return json(
+                        { error: "Speech acknowledgement was not accepted" },
+                        403,
+                    );
+                return json({ ok: true });
+            }
             if (request.method === "POST" && parts[3] === "vote") {
                 const body = await readBody(request);
                 if (typeof body.playerId !== "string") {

@@ -642,6 +642,7 @@ test("meeting statements stream before voting opens", async () => {
         reason: "Body reported",
         reporterId: human.id,
         bodyId: null,
+        startedAtTick: game.tick,
         stage: "discussion",
         transcript: [],
         votes: {},
@@ -694,6 +695,7 @@ test("meeting statements stream before voting opens", async () => {
         expect(runtime.state.meeting?.transcript[0]?.playerId).toBe(human.id);
         expect(runtime.state.meeting?.stage).toBe("discussion");
         expect(runtime.voteHuman(human.id, "player-1")).toBe(false);
+        let lastAcknowledged = -1;
         for (
             let attempt = 0;
             attempt < 40 &&
@@ -701,6 +703,17 @@ test("meeting statements stream before voting opens", async () => {
                 Object.keys(runtime.state.meeting?.votes ?? {}).length < 3);
             attempt += 1
         ) {
+            const pending = runtime.state.meeting?.awaitingSpeechIndex;
+            if (
+                pending !== null &&
+                pending !== undefined &&
+                pending !== lastAcknowledged
+            ) {
+                expect(runtime.acknowledgeSpeech(human.id, game.tick, pending)).toBe(
+                    true,
+                );
+                lastAcknowledged = pending;
+            }
             await Bun.sleep(20);
         }
         expect(runtime.state.meeting?.transcript).toHaveLength(4);
@@ -713,6 +726,98 @@ test("meeting statements stream before voting opens", async () => {
         )
             await Bun.sleep(5);
         expect(runtime.state.phase).toBe("ejection");
+    } finally {
+        runtime.stop();
+    }
+});
+
+test("human chat reaches agents and speech completion gates the next reply", async () => {
+    const game = createGame({ playerCount: 4, impostorCount: 1, humanPlayers: 1 }, 73);
+    const human = game.players[0];
+    if (!human) throw new Error("Expected human");
+    game.phase = "meeting";
+    game.meeting = {
+        reason: "Emergency meeting",
+        reporterId: human.id,
+        bodyId: null,
+        startedAtTick: 40,
+        stage: "discussion",
+        transcript: [],
+        votes: {},
+        endsAtTick: 100,
+    };
+    const seenByAgents: string[][] = [];
+    let voteSawHumanMessage = false;
+    const agents = {
+        async decide(state: typeof game, playerId: string) {
+            return {
+                playerId,
+                observation: observeGame(state, playerId),
+                decision: {
+                    actionId: ACTION.NOOP,
+                    confidence: 1,
+                    source: "fallback" as const,
+                    probabilities: {},
+                },
+            };
+        },
+        async shouldSpeak() {
+            return { speak: true, confidence: 1, source: "jev" as const };
+        },
+        async discuss(
+            _state: typeof game,
+            playerId: string,
+            transcript: { playerId: string; text: string }[],
+        ) {
+            seenByAgents.push(transcript.map((message) => message.text));
+            return {
+                message: { playerId, text: `Agent reply ${seenByAgents.length}` },
+                voteFor: null,
+            };
+        },
+        async vote(
+            _state: typeof game,
+            _playerId: string,
+            transcript: { playerId: string; text: string }[],
+        ) {
+            voteSawHumanMessage ||= transcript.some(
+                (message) => message.text === "Mira was near Electrical.",
+            );
+            return "player-1";
+        },
+    };
+    const runtime = new GameRuntime(game, agents, 10, 100, 700);
+    runtime.start();
+    try {
+        for (
+            let attempt = 0;
+            attempt < 20 && runtime.state.meeting?.awaitingSpeechIndex == null;
+            attempt += 1
+        )
+            await Bun.sleep(10);
+        const pending = runtime.state.meeting?.awaitingSpeechIndex;
+        expect(pending).toBeNumber();
+        if (pending === null || pending === undefined)
+            throw new Error("Expected agent speech to be pending");
+        expect(seenByAgents).toHaveLength(1);
+        expect(runtime.speakHuman(human.id, "   ")).toBe(false);
+        expect(runtime.speakHuman(human.id, "  Mira was near Electrical.  ")).toBe(
+            true,
+        );
+        expect(runtime.state.meeting?.transcript.at(-1)?.text).toBe(
+            "Mira was near Electrical.",
+        );
+        await Bun.sleep(70);
+        expect(seenByAgents).toHaveLength(1);
+        expect(runtime.acknowledgeSpeech(human.id, 39, pending)).toBe(false);
+        expect(runtime.acknowledgeSpeech(human.id, 40, pending)).toBe(true);
+        for (let attempt = 0; attempt < 20 && seenByAgents.length < 2; attempt += 1)
+            await Bun.sleep(10);
+        expect(seenByAgents.length).toBeGreaterThanOrEqual(2);
+        expect(seenByAgents[1]).toContain("Mira was near Electrical.");
+        for (let attempt = 0; attempt < 70 && !voteSawHumanMessage; attempt += 1)
+            await Bun.sleep(10);
+        expect(voteSawHumanMessage).toBe(true);
     } finally {
         runtime.stop();
     }

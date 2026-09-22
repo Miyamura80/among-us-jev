@@ -34,6 +34,65 @@ function planReply(
     };
 }
 
+function gameMeetingAfterSpentCooldown(meetingKind: "emergency" | "body") {
+    const game = createGame({ playerCount: 6, impostorCount: 2, humanPlayers: 1 }, 23);
+    const reporter = game.players[0];
+    const victim = game.players.find(
+        (player) => player.role === "crewmate" && player.id !== reporter?.id,
+    );
+    if (!reporter || !victim) throw new Error("Expected crewmates");
+    reporter.position = centerOf("cafeteria");
+    reporter.roomId = "cafeteria";
+    game.tick = 60;
+    for (const player of game.players) {
+        if (player.role === "impostor") player.killCooldown = 0;
+    }
+    if (meetingKind === "body") {
+        victim.alive = false;
+        game.bodies.push({
+            playerId: victim.id,
+            position: { ...reporter.position },
+            roomId: "cafeteria",
+            reported: false,
+            createdAtTick: game.tick,
+        });
+    }
+    return stepGame(
+        game,
+        reporter.id,
+        meetingKind === "body" ? ACTION.REPORT_BODY : ACTION.CALL_MEETING,
+    );
+}
+
+function meetingWithHumanCount(humanPlayers: number) {
+    const game = createGame({ playerCount: 4, impostorCount: 1, humanPlayers }, 23);
+    const reporter = game.players[0];
+    if (!reporter) throw new Error("Expected reporter");
+    reporter.position = centerOf("cafeteria");
+    reporter.roomId = "cafeteria";
+    if (!humanPlayers) {
+        const victim = game.players.find(
+            (player) => player.role === "crewmate" && player.id !== reporter.id,
+        );
+        if (!victim) throw new Error("Expected victim");
+        victim.alive = false;
+        game.bodies.push({
+            playerId: victim.id,
+            position: { ...reporter.position },
+            roomId: "cafeteria",
+            reported: false,
+            createdAtTick: game.tick,
+        });
+    }
+    game.firstKillAtMs = 0;
+    const called = stepGame(
+        game,
+        reporter.id,
+        humanPlayers ? ACTION.CALL_MEETING : ACTION.REPORT_BODY,
+    );
+    return { called, reporterId: reporter.id };
+}
+
 describe("authoritative game engine", () => {
     test("builds a stable 255-action private observation", () => {
         const game = createGame({ playerCount: 6, impostorCount: 1 }, 42);
@@ -793,29 +852,53 @@ describe("authoritative game engine", () => {
         ).toBe(false);
     });
 
-    test("opens every meeting with a thirty-second discussion-only deadline", () => {
-        const game = createGame(
-            { playerCount: 4, impostorCount: 1, humanPlayers: 1 },
-            23,
-        );
-        const human = game.players[0];
-        if (!human) throw new Error("Expected human reporter");
-        game.firstKillAtMs = 0;
-        const startedAtMs = Date.now();
-        const called = stepGame(game, human.id, ACTION.CALL_MEETING);
-        expect(called.accepted).toBe(true);
-        expect(called.state.meeting?.stage).toBe("discussion");
-        expect(called.state.meeting?.votes).toEqual({});
-        expect(called.state.meeting?.discussionEndsAtMs).toBeGreaterThanOrEqual(
-            startedAtMs + 30_000,
-        );
-        expect(called.state.meeting?.discussionEndsAtMs).toBeLessThanOrEqual(
-            Date.now() + 30_000,
-        );
-        const publicMeeting = serializeGameState(called.state, human.id) as {
-            meeting: { discussionSecondsRemaining: number };
-        };
-        expect(publicMeeting.meeting.discussionSecondsRemaining).toBe(30);
+    test("gives human discussions ninety seconds and agent-only discussions thirty", () => {
+        for (const humanPlayers of [0, 1]) {
+            const startedAtMs = Date.now();
+            const { called, reporterId } = meetingWithHumanCount(humanPlayers);
+            const duration = humanPlayers ? 90_000 : 30_000;
+            expect(called.accepted).toBe(true);
+            expect(called.state.meeting?.stage).toBe("discussion");
+            expect(called.state.meeting?.votes).toEqual({});
+            expect(called.state.meeting?.discussionEndsAtMs).toBeGreaterThanOrEqual(
+                startedAtMs + duration,
+            );
+            expect(called.state.meeting?.discussionEndsAtMs).toBeLessThanOrEqual(
+                Date.now() + duration,
+            );
+            const publicMeeting = serializeGameState(called.state, reporterId) as {
+                meeting: { discussionSecondsRemaining: number };
+            };
+            expect(publicMeeting.meeting.discussionSecondsRemaining).toBe(
+                duration / 1_000,
+            );
+        }
+    });
+
+    test("resets living impostors' kill cooldown after either kind of meeting", () => {
+        for (const meetingKind of ["emergency", "body"] as const) {
+            const meeting = gameMeetingAfterSpentCooldown(meetingKind);
+            expect(meeting.accepted).toBe(true);
+            expect(meeting.state.meeting?.startedAtTick).toBe(60);
+            const publicMeeting = serializeGameState(
+                meeting.state,
+                meeting.state.meeting?.reporterId ?? null,
+            ) as {
+                meeting: { startedAtTick: number };
+            };
+            expect(publicMeeting.meeting.startedAtTick).toBe(60);
+
+            const ejection = resolveVotes(meeting.state, {});
+            if (!ejection.ejection) throw new Error("Expected ejection phase");
+            ejection.ejection.endsAtMs = Date.now() - 1;
+            const resumed = advanceGame(ejection);
+            expect(resumed.phase).toBe("action");
+            for (const impostor of resumed.players.filter(
+                (player) => player.alive && player.role === "impostor",
+            )) {
+                expect(impostor.killCooldown).toBe(resumed.settings.killCooldownTicks);
+            }
+        }
     });
 
     test("retains the complete ballot during the ejection phase", () => {

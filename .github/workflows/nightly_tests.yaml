@@ -25,6 +25,10 @@ jobs:
     - name: Install dependencies
       run: bun install
 
+    - name: Install frontend dependencies
+      working-directory: frontend
+      run: bun install --frozen-lockfile
+
     - name: Set environment variables
       run: |
         echo "DEV_ENV=${{ secrets.DEV_ENV }}" >> $GITHUB_ENV
