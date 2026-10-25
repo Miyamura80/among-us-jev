@@ -182,10 +182,11 @@ agents_validate: check_bun ## Validate AGENTS.md content
 	@bun run scripts/validate-agents-md.ts
 	@echo "$(GREEN)✅AGENTS.md validation completed.$(RESET)"
 
+.PHONY: lint_immutable_refs
 lint_immutable_refs: ## Fail if a Dockerfile or GitHub Actions file uses a mutable image tag or action ref
 	@echo "$(YELLOW)🔍 Checking for mutable image/action references...$(RESET)"
 	@python3 scripts/check_immutable_refs.py
-	@echo "$(GREEN)✅ All images pinned by digest and actions by commit sha.$(RESET)"
+	@echo "$(GREEN)✅ All non-exempt references are pinned.$(RESET)"
 
 check_ai_writing: check_bun ## Check for AI-written content
 	@echo "$(YELLOW)🔍 Checking AI writing patterns...$(RESET)"
