@@ -70,11 +70,16 @@ def flow_depth(line: str, depth: int) -> int:
     return max(0, depth + bare.count("{") + bare.count("[") - bare.count("}") - bare.count("]"))
 
 
-# A `*version` key whose value starts on the next line: plain multiline or `|` / `>` block.
-VERSION_OPEN = re.compile(
-    BLOCK_KEY + r"""(?P<key>[\w-]*version)["']?\s*:\s*(?:[|>][-+0-9]*)?\s*(?:#.*)?$""",
-    re.IGNORECASE,
+# A checked key whose value starts on the next line: plain multiline or `|` / `>` block.
+OPEN_TAIL = (
+    r"""(?P<key>uses|image|container|[\w-]*version)["']?\s*:\s*(?:[|>][-+0-9]*)?\s*(?:#.*)?$"""
 )
+OPEN = re.compile(BLOCK_KEY + OPEN_TAIL, re.IGNORECASE)
+OPEN_FLOW = re.compile(FLOW_KEY + OPEN_TAIL, re.IGNORECASE)
+# A `|` / `>` block-scalar indicator: the value itself is on the next line.
+BLOCK_INDICATOR = re.compile(r"^[|>][-+0-9]*$")
+# A nested mapping key or sequence item: the key above holds a collection, not a scalar.
+COLLECTION_ITEM = re.compile(r"""^(?:-(?:\s|$)|["']?[\w.-]+["']?\s*:(?:\s|$))""")
 EXEMPT = re.compile(r"^\s*#\s*pin-exempt:\s*\S")
 PARSER_DIRECTIVE = re.compile(r"^#\s*(?P<name>[A-Za-z]+)\s*=\s*(?P<value>\S*)\s*$")
 
@@ -266,16 +271,44 @@ def container_problem(key: str, ref: str, is_action_metadata: bool) -> str | Non
     return mutable_image(ref)
 
 
-def next_scalar_line(lines: list[str], lineno: int, key_line: str) -> str | None:
-    """First line of a value that starts below its key, or None if the next line is not indented under it."""
+def next_scalar_line(lines: list[str], lineno: int, key_line: str, in_flow: bool) -> str | None:
+    """First line of a scalar that starts below its key, or None if no scalar continues it.
+
+    Comments are dropped; inside a block scalar that can only over-match (fail closed).
+    In a flow collection indentation does not matter and a closing `}` / `]` / `,` ends the value.
+    """
     indent = len(key_line) - len(key_line.lstrip())
     for line in lines[lineno:]:
-        if not line.strip():
+        value = line.strip()
+        if not value or value.startswith("#"):
             continue
-        if len(line) - len(line.lstrip()) <= indent:
+        if not in_flow and len(line) - len(line.lstrip()) <= indent or COLLECTION_ITEM.match(value):
             return None
-        return line.strip().strip("\"'").lower()
+        value = re.sub(r"\s+#.*$", "", value)
+        if in_flow:
+            value = re.split(r"\s*[,}\]]", value, maxsplit=1)[0]
+        return value.strip().strip("\"'")
     return None
+
+
+def next_line_problem(
+    key: str, ref: str | None, exempt: bool, is_action_metadata: bool
+) -> str | None:
+    """Problem with a `uses` / `image` / `container` / `*version` value written below its key."""
+    if ref is None:
+        return None
+    key = key.lower()
+    if key == "uses":
+        why = uses_problem(ref)
+        return f"uses {ref}: {why}" if why else None
+    if key.endswith("version"):
+        return (
+            f"{key}: latest is mutable; name an exact version" if ref.lower() == "latest" else None
+        )
+    if exempt:
+        return None  # pin-exempt covers images only
+    why = container_problem(key, ref, is_action_metadata)
+    return f"{key} {ref}: {why}" if why else None
 
 
 def check_actions_file(path: str, lines: list[str]) -> list[str]:
@@ -289,17 +322,29 @@ def check_actions_file(path: str, lines: list[str]) -> list[str]:
         # Every match counts: a flow-style line can hold several steps or keys.
         for m in uses_re.finditer(line):
             ref = m["ref"].strip("\"'")
-            if why := uses_problem(ref):
+            if not BLOCK_INDICATOR.match(ref) and (why := uses_problem(ref)):
                 errors.append(f"{path}:{lineno}: uses {ref}: {why}")
-        if (m := latest_re.search(line)) or (
-            (m := VERSION_OPEN.match(line)) and next_scalar_line(lines, lineno, line) == "latest"
-        ):
+        if m := latest_re.search(line):
             errors.append(f"{path}:{lineno}: {m['key']}: latest is mutable; name an exact version")
-        if lineno > 1 and EXEMPT.match(lines[lineno - 2]):
-            continue  # pin-exempt covers images only, so it is checked after uses
+        exempt = lineno > 1 and bool(EXEMPT.match(lines[lineno - 2]))  # covers images only
+        # A value on the line below its key is checked like one on the key's own line.
+        opened = OPEN_FLOW.search(line) if in_flow else OPEN.match(line)
+        if opened and (
+            why := next_line_problem(
+                opened["key"],
+                next_scalar_line(lines, lineno, line, in_flow),
+                exempt,
+                is_action_metadata,
+            )
+        ):
+            errors.append(f"{path}:{lineno}: {why}")
+        if exempt:
+            continue
         for m in image_re.finditer(line):
             key, ref = m["key"], m["ref"].strip("\"'")
-            if why := container_problem(key, ref, is_action_metadata):
+            if not BLOCK_INDICATOR.match(ref) and (
+                why := container_problem(key, ref, is_action_metadata)
+            ):
                 errors.append(f"{path}:{lineno}: {key} {ref}: {why}")
     return errors
 
