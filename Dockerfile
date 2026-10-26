@@ -14,7 +14,8 @@ RUN cd frontend && bun run build
 
 FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
 
-# ca-certificates: listed explicitly so each build pulls the post-eMudhra trust store
+# ca-certificates: installed explicitly so the image carries the distro's current (post-eMudhra)
+# trust store when this layer is built. Docker caches the layer, so rebuild with --no-cache to refresh it.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
