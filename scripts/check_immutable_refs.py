@@ -31,25 +31,52 @@ import sys
 from pathlib import PurePosixPath
 
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
-COMMIT_SHA = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+COMMIT_SHA = re.compile(r"^[^@\s/]+/[^@\s]+@[0-9a-f]{40}$")  # owner/repo[/path]@<sha>
 INSTRUCTION = re.compile(r"^\s*(?P<cmd>[A-Za-z]+)\s+(?P<args>.*)$")
-ARG_DEFAULT = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>\S+)$")
+ARG_DEFAULT = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>\S*)$")
 VARIABLE = re.compile(
     r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)"
 )
 COPY_FROM = re.compile(r"--from=(?P<ref>\S+)", re.IGNORECASE)
 MOUNT_FROM = re.compile(r"--mount=\S*?\bfrom=(?P<ref>[^\s,]+)", re.IGNORECASE)
-# A YAML key at the start of a line (block style) or after `{` / `,` (flow style,
-# `- { uses: ... }`), optionally quoted, with optional space before the colon.
-YAML_KEY = r"""(?:^\s*(?:-\s*)?|[{,]\s*)["']?"""
+# A YAML key, optionally quoted, with optional space before the colon. Keys after `{`
+# or `,` count only on a flow-collection line (`- { uses: ... }`, `steps: [{ ... }]`),
+# so a brace or comma inside a `run:` string is not mistaken for a key.
+BLOCK_KEY = r"""^\s*(?:-\s*)?["']?"""
+FLOW_KEY = r"""(?:^\s*(?:-\s*)?|[{,]\s*)["']?"""
+FLOW_LINE = re.compile(r"""^\s*(?:-\s*)?(?:["']?[\w.-]+["']?\s*:\s*)?[\[{]""")
 YAML_VALUE = r"""["']?\s*:\s*(?P<ref>[^\s#,{}]+)"""
-USES = re.compile(YAML_KEY + "uses" + YAML_VALUE)
-IMAGE = re.compile(YAML_KEY + "(?P<key>image|container)" + YAML_VALUE)
-LATEST_INPUT = re.compile(
-    YAML_KEY + r"""(?P<key>[\w-]*version)["']?\s*:\s*["']?latest["']?\s*(?:[,}#].*)?$""",
+
+
+def key_patterns(key: str) -> tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]:
+    return (
+        re.compile(key + "uses" + YAML_VALUE),
+        re.compile(key + "(?P<key>image|container)" + YAML_VALUE),
+        re.compile(
+            key + r"""(?P<key>[\w-]*version)["']?\s*:\s*["']?latest["']?\s*(?:[,}#].*)?$""",
+            re.IGNORECASE,
+        ),
+    )
+
+
+BLOCK_PATTERNS = key_patterns(BLOCK_KEY)
+FLOW_PATTERNS = key_patterns(FLOW_KEY)
+QUOTED_OR_COMMENT = re.compile(r""""(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|\s#.*$""")
+
+
+def flow_depth(line: str, depth: int) -> int:
+    """Unclosed `{` / `[` after this line, ignoring quoted text and comments."""
+    bare = QUOTED_OR_COMMENT.sub("", line)
+    return max(0, depth + bare.count("{") + bare.count("[") - bare.count("}") - bare.count("]"))
+
+
+# A `*version` key whose value starts on the next line: plain multiline or `|` / `>` block.
+VERSION_OPEN = re.compile(
+    BLOCK_KEY + r"""(?P<key>[\w-]*version)["']?\s*:\s*(?:[|>][-+0-9]*)?\s*(?:#.*)?$""",
     re.IGNORECASE,
 )
 EXEMPT = re.compile(r"^\s*#\s*pin-exempt:\s*\S")
+PARSER_DIRECTIVE = re.compile(r"^#\s*(?P<name>[A-Za-z]+)\s*=\s*(?P<value>\S*)\s*$")
 
 
 def list_files() -> list[str]:
@@ -90,8 +117,20 @@ def mutable_image(ref: str) -> str | None:
     return "tag is mutable; append @sha256:<digest>"
 
 
+def escape_char(lines: list[str]) -> str:
+    """The line-continuation character set by a leading `# escape=` parser directive."""
+    for raw in lines:
+        m = PARSER_DIRECTIVE.match(raw.strip())
+        if not m:
+            break  # directives are only honoured before the first non-directive line
+        if m["name"].lower() == "escape" and m["value"] in {"\\", "`"}:
+            return m["value"]
+    return "\\"
+
+
 def instructions(lines: list[str]) -> list[tuple[int, bool, str]]:
     """Join continuation lines into (first lineno, pin-exempt, instruction text)."""
+    escape = escape_char(lines)
     out: list[tuple[int, bool, str]] = []
     exempt = False
     buf: list[str] = []
@@ -108,14 +147,16 @@ def instructions(lines: list[str]) -> list[tuple[int, bool, str]]:
             start = lineno
         elif not stripped or stripped.startswith("#"):
             continue  # blank and comment lines inside a continuation are dropped by Docker
-        if stripped.endswith("\\"):
-            buf.append(stripped[:-1])
+        # Docker drops only the escape and the newline, keeping the next line's indent
+        part = stripped if not buf else raw.rstrip()
+        if part.endswith(escape):
+            buf.append(part[:-1])
             continue
-        buf.append(stripped)
-        out.append((start, exempt, " ".join(buf)))
+        buf.append(part)
+        out.append((start, exempt, "".join(buf)))
         buf, exempt = [], False
     if buf:
-        out.append((start, exempt, " ".join(buf)))
+        out.append((start, exempt, "".join(buf)))
     return out
 
 
@@ -163,22 +204,40 @@ def image_problem(ref: str, args: dict[str, str]) -> str | None:
     return mutable_image(resolved)
 
 
+def declare_args(rest: str, scope: dict[str, str], inherit: dict[str, str]) -> None:
+    """Record an ARG instruction; a bare `ARG NAME` in a stage takes the global default."""
+    for token in rest.split():
+        if arg := ARG_DEFAULT.match(token):
+            scope[arg["name"]] = arg["value"].strip("\"'")
+        elif token in inherit:
+            scope[token] = inherit[token]
+        else:
+            scope.pop(token, None)  # declared without a default: unresolved from here on
+
+
 def check_dockerfile(path: str, lines: list[str]) -> list[str]:
     errors: list[str] = []
     stages: set[str] = set()
-    args: dict[str, str] = {}
+    # Docker scoping: FROM sees only ARGs declared before the first FROM; each stage
+    # starts empty and sees a global value only by redeclaring it without a default.
+    global_args: dict[str, str] = {}
+    stage_args: dict[str, str] | None = None
     for lineno, exempt, text in instructions(lines):
         m = INSTRUCTION.match(text)
         if not m:
             continue
         cmd, rest = m["cmd"].upper(), m["args"]
         if cmd == "ARG":
-            for token in rest.split():
-                if arg := ARG_DEFAULT.match(token):
-                    args[arg["name"]] = arg["value"].strip("\"'")
+            if stage_args is None:
+                declare_args(rest, global_args, {})
+            else:
+                declare_args(rest, stage_args, global_args)
+        scope = global_args if cmd == "FROM" else (stage_args or {})
         for label, ref in image_refs(cmd, rest, stages):
-            if not exempt and (why := image_problem(ref, args)):
+            if not exempt and (why := image_problem(ref, scope)):
                 errors.append(f"{path}:{lineno}: {label}{ref}: {why}")
+        if cmd == "FROM":
+            stage_args = {}
     return errors
 
 
@@ -196,7 +255,8 @@ def container_problem(key: str, ref: str, is_action_metadata: bool) -> str | Non
         # (docker://<image> or a bare name), which must be pinned like any other
         if ref.startswith("docker://"):
             ref = ref.removeprefix("docker://")
-        elif is_dockerfile(ref):
+        elif ref.endswith(("Dockerfile", "dockerfile")) and not {":", "@"} & set(ref):
+            # a path, by the runner's own rule; `:` or `@` makes it an image reference
             return None
     if "${{" in ref:
         return (
@@ -206,19 +266,38 @@ def container_problem(key: str, ref: str, is_action_metadata: bool) -> str | Non
     return mutable_image(ref)
 
 
+def next_scalar_line(lines: list[str], lineno: int, key_line: str) -> str | None:
+    """First line of a value that starts below its key, or None if the next line is not indented under it."""
+    indent = len(key_line) - len(key_line.lstrip())
+    for line in lines[lineno:]:
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            return None
+        return line.strip().strip("\"'").lower()
+    return None
+
+
 def check_actions_file(path: str, lines: list[str]) -> list[str]:
     errors: list[str] = []
     is_action_metadata = PurePosixPath(path).stem == "action"
+    depth = 0  # open flow collections, so continuation lines of a `{ ... }` keep flow parsing
     for lineno, line in enumerate(lines, 1):
-        if m := USES.search(line):
+        in_flow = depth > 0 or bool(FLOW_LINE.match(line))
+        uses_re, image_re, latest_re = FLOW_PATTERNS if in_flow else BLOCK_PATTERNS
+        depth = flow_depth(line, depth) if in_flow else 0
+        # Every match counts: a flow-style line can hold several steps or keys.
+        for m in uses_re.finditer(line):
             ref = m["ref"].strip("\"'")
             if why := uses_problem(ref):
                 errors.append(f"{path}:{lineno}: uses {ref}: {why}")
-        elif m := LATEST_INPUT.search(line):
+        if (m := latest_re.search(line)) or (
+            (m := VERSION_OPEN.match(line)) and next_scalar_line(lines, lineno, line) == "latest"
+        ):
             errors.append(f"{path}:{lineno}: {m['key']}: latest is mutable; name an exact version")
-        elif m := IMAGE.search(line):
-            if lineno > 1 and EXEMPT.match(lines[lineno - 2]):
-                continue
+        if lineno > 1 and EXEMPT.match(lines[lineno - 2]):
+            continue  # pin-exempt covers images only, so it is checked after uses
+        for m in image_re.finditer(line):
             key, ref = m["key"], m["ref"].strip("\"'")
             if why := container_problem(key, ref, is_action_metadata):
                 errors.append(f"{path}:{lineno}: {key} {ref}: {why}")
