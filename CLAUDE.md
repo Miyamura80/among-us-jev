@@ -27,7 +27,7 @@ make lint           # Run Biome linter (check only)
 make deadcode       # Find dead code + unused deps with knip
 make typecheck      # Run TypeScript type checker (tsc --noEmit)
 make lint_links     # Check for broken links in markdown files
-make ci             # Run all CI checks (lint, deadcode, typecheck, lint_links)
+make ci             # Run all CI checks (lint, deadcode, typecheck, tech_debt, duplicate_code, import_lint, lint_links, check_ai_writing, sync-agent-config-check, lint_immutable_refs)
 
 # Dependencies
 bun install         # Install dependencies
