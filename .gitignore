@@ -48,3 +48,6 @@ coverage/
 
 # Agent session files
 .claude/scheduled_tasks.lock
+
+# Model comparison output
+reports/

@@ -47,7 +47,8 @@
             "bun.lock",
             "frontend",
             "manual_docs",
-            "media"
+            "media",
+            "reports"
         ]
     }
 }

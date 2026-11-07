@@ -15,7 +15,7 @@ interface JevChoiceAnswer {
     probabilities: Record<string, number>;
 }
 
-interface JevResponse {
+export interface JevResponse {
     model: string;
     answers: {
         action?: JevChoiceAnswer;
@@ -283,6 +283,46 @@ function actionCriterion(actionId: number, observation: Observation): string {
     return `${label}: a currently legal action`;
 }
 
+/** The Jev decision request for one action step; shared with other decision backends. */
+export function buildActionRequest(
+    observation: Observation,
+    strategicGoal: string,
+    alternative?: PlanOption & { trigger: string },
+    primary?: PlanOption,
+): { state: object; questions: object } {
+    const legalActions = enabledActionIds(observation.actionMask);
+    const criteria = Object.fromEntries(
+        legalActions.map((actionId) => [
+            String(actionId),
+            actionCriterion(actionId, observation),
+        ]),
+    );
+    return {
+        state: {
+            strategicGoal,
+            planA: primary ?? { goal: strategicGoal },
+            planB: alternative ?? null,
+            observation: safeObservation(observation),
+        },
+        questions: {
+            ...planQuestion(alternative),
+            action: {
+                type: "choice",
+                instructions: [
+                    "Choose exactly one legal action. Tactical priorities override plan A or B; knownImpostors are teammates, never kill targets. Never infer hidden witnesses.",
+                    "IMPOSTOR ESCAPE PRIORITY: if killCooldown is positive and an unreported body is in your room, leave NOW. On the very next action after a kill, move away immediately and keep moving toward another room; do not pause, fake a task, self-report, double back, or keep following the old kill plan. Choose movement that increases distance from the body and heads toward the nearest safe exit. Use a vent only if no living crewmate can see the entry or exit; if you enter, travel to a linked vent instead of popping back out beside the body. Continue escaping on every action until you have left the murder room, even after the body is no longer within interaction range.",
+                    "ISOLATED KILL IS THE DEFAULT: if KILL_PLAYER_i is legal and its living crewmate target has no visible credible witness able to identify you, kill immediately. If you have been beside the same isolated target for several seconds, that is urgent, not a reason to keep following. Do not wait for a better setup, fake a task, replan, or move away. A visible but distant crewmate who cannot see both of you is not a witness. A nearby fellow impostor in knownImpostors is your teammate, not a witness: when it is two impostors and one isolated crewmate, kill the crewmate. The action mask already confirms kill range and cooldown.",
+                    "CROWD KILL EXCEPTION: if five or more living players including you and the victim are tightly bunched together, close witnesses see the death but cannot reliably identify the killer. Take the legal kill if nobody outside that cluster has clear sight of both you and the victim. Do not mistake a loosely spread group for cover. Do not kill in clear view of a certain eyewitness when crew tasks are low. As crew tasks near completion, accept moderate exposure to avoid losing. If the selected goal names a legal SABOTAGE_i and no sabotage is active, choose it only after checking kill and escape opportunities.",
+                    "CLOSE PURSUIT: when your impostor plan names a visible crewmate to follow, walk very close to them and close the gap toward kill range; do not shadow them from across the room. Keep moving with their route unless a legal kill, escape, or safer plan B overrides it. Avoid standing still on top of them.",
+                    "VENT_SLOT_i is observation.vents[i]; the current vent exits, a linked vent travels. Prefer walking near crew, never enter a vent merely to reach your current room, and never idle while hidden. Otherwise follow the selected plan.",
+                    taskUrgencyInstruction(observation),
+                ].join(" "),
+                criteria,
+            },
+        },
+    };
+}
+
 export class JevClient {
     readonly endpoint = "https://api.typesafe.ai/v1/systemone";
     private readonly apiKey: string;
@@ -336,6 +376,13 @@ export class JevClient {
             body: JSON.stringify({ ...body, model: "~typesafe/jev-latest" }),
             signal: AbortSignal.timeout(timeoutMs),
         });
+    }
+
+    /** Send a raw decision request and return the parsed answers. */
+    async decide(body: object, timeoutMs = 2_500): Promise<JevResponse> {
+        const response = await this.request(body, timeoutMs);
+        if (!response.ok) throw new Error(`Jev returned ${response.status}`);
+        return (await response.json()) as JevResponse;
     }
 
     async shouldSpeak(
@@ -411,38 +458,9 @@ export class JevClient {
         if (!this.configured || legalActions.length <= 1) {
             return fallbackDecision(legalActions, fallbackAction, 1);
         }
-        const criteria = Object.fromEntries(
-            legalActions.map((actionId) => [
-                String(actionId),
-                actionCriterion(actionId, observation),
-            ]),
-        );
         try {
             const response = await this.request(
-                {
-                    state: {
-                        strategicGoal,
-                        planA: primary ?? { goal: strategicGoal },
-                        planB: alternative ?? null,
-                        observation: safeObservation(observation),
-                    },
-                    questions: {
-                        ...planQuestion(alternative),
-                        action: {
-                            type: "choice",
-                            instructions: [
-                                "Choose exactly one legal action. Tactical priorities override plan A or B; knownImpostors are teammates, never kill targets. Never infer hidden witnesses.",
-                                "IMPOSTOR ESCAPE PRIORITY: if killCooldown is positive and an unreported body is in your room, leave NOW. On the very next action after a kill, move away immediately and keep moving toward another room; do not pause, fake a task, self-report, double back, or keep following the old kill plan. Choose movement that increases distance from the body and heads toward the nearest safe exit. Use a vent only if no living crewmate can see the entry or exit; if you enter, travel to a linked vent instead of popping back out beside the body. Continue escaping on every action until you have left the murder room, even after the body is no longer within interaction range.",
-                                "ISOLATED KILL IS THE DEFAULT: if KILL_PLAYER_i is legal and its living crewmate target has no visible credible witness able to identify you, kill immediately. If you have been beside the same isolated target for several seconds, that is urgent, not a reason to keep following. Do not wait for a better setup, fake a task, replan, or move away. A visible but distant crewmate who cannot see both of you is not a witness. A nearby fellow impostor in knownImpostors is your teammate, not a witness: when it is two impostors and one isolated crewmate, kill the crewmate. The action mask already confirms kill range and cooldown.",
-                                "CROWD KILL EXCEPTION: if five or more living players including you and the victim are tightly bunched together, close witnesses see the death but cannot reliably identify the killer. Take the legal kill if nobody outside that cluster has clear sight of both you and the victim. Do not mistake a loosely spread group for cover. Do not kill in clear view of a certain eyewitness when crew tasks are low. As crew tasks near completion, accept moderate exposure to avoid losing. If the selected goal names a legal SABOTAGE_i and no sabotage is active, choose it only after checking kill and escape opportunities.",
-                                "CLOSE PURSUIT: when your impostor plan names a visible crewmate to follow, walk very close to them and close the gap toward kill range; do not shadow them from across the room. Keep moving with their route unless a legal kill, escape, or safer plan B overrides it. Avoid standing still on top of them.",
-                                "VENT_SLOT_i is observation.vents[i]; the current vent exits, a linked vent travels. Prefer walking near crew, never enter a vent merely to reach your current room, and never idle while hidden. Otherwise follow the selected plan.",
-                                taskUrgencyInstruction(observation),
-                            ].join(" "),
-                            criteria,
-                        },
-                    },
-                },
+                buildActionRequest(observation, strategicGoal, alternative, primary),
                 2_500,
             );
             if (!response.ok) throw new Error(`Jev returned ${response.status}`);

@@ -114,6 +114,9 @@ all: check_bun ## Install deps and run main application
 dev: check_bun ## Run in watch mode
 	@bun run dev
 
+compare_clef: check_bun ## Compare Jev vs Cloudflare Clef-omni decisions (N=30 SEED=1)
+	@bun run scripts/compare-clef.ts $(or $(N),30) $(or $(SEED),1)
+
 ########################################################
 # Testing
 ########################################################
